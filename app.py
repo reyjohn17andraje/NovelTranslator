@@ -1,10 +1,17 @@
-import os, json, threading, time, re, requests, boto3
+import os
+import json
+import threading
+import time
+import requests
+import boto3
 from bs4 import BeautifulSoup
-from fastapi import FastAPI, Form
+from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from openai import OpenAI
 
-# ================= ENV =================
+# ======================================================
+# ENV
+# ======================================================
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 R2_ACCESS_KEY = os.getenv("R2_ACCESS_KEY", "").strip()
@@ -13,9 +20,7 @@ R2_ENDPOINT = os.getenv("R2_ENDPOINT", "").strip()
 R2_BUCKET = os.getenv("R2_BUCKET", "").strip()
 
 if not all([OPENAI_API_KEY, R2_ACCESS_KEY, R2_SECRET_KEY, R2_ENDPOINT, R2_BUCKET]):
-    raise RuntimeError("Missing environment variables")
-
-# ================= CLIENTS =================
+    raise RuntimeError("Missing required environment variables")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -28,54 +33,49 @@ s3 = boto3.client(
 
 app = FastAPI()
 
-STATE_KEY = "state.json"
+# ======================================================
+# STORAGE KEYS
+# ======================================================
 
-DEFAULT_STATE = {
+STATE_KEY = "state.json"
+META_KEY = "chapters/meta.json"
+
+# ======================================================
+# STATE
+# ======================================================
+
+state = {
     "running": False,
     "current_url": None,
-    "base_url": None,
+    "chapter": 0,
+    "last_read": None
 }
 
-state = DEFAULT_STATE.copy()
-
-# ================= STATE =================
-
-def load_state():
+def load_json(key, default):
     try:
-        obj = s3.get_object(Bucket=R2_BUCKET, Key=STATE_KEY)
-        state.update(json.loads(obj["Body"].read().decode()))
+        obj = s3.get_object(Bucket=R2_BUCKET, Key=key)
+        return json.loads(obj["Body"].read().decode())
     except:
-        pass
+        return default
 
-def save_state():
+def save_json(key, data):
     s3.put_object(
         Bucket=R2_BUCKET,
-        Key=STATE_KEY,
-        Body=json.dumps(state),
+        Key=key,
+        Body=json.dumps(data, ensure_ascii=False),
         ContentType="application/json"
     )
 
-load_state()
-state["running"] = False
-save_state()
+state.update(load_json(STATE_KEY, {}))
+meta = load_json(META_KEY, [])
 
-# ================= R2 HELPERS =================
+# ======================================================
+# HELPERS
+# ======================================================
 
-def list_chapters():
-    res = s3.list_objects_v2(Bucket=R2_BUCKET, Prefix="chapters/")
-    if "Contents" not in res:
-        return []
-    return sorted([c["Key"].split("/")[-1] for c in res["Contents"]])
-
-def chapter_count():
-    return len(list_chapters())
-
-def delete_all_chapters():
-    chapters = list_chapters()
-    for c in chapters:
-        s3.delete_object(Bucket=R2_BUCKET, Key=f"chapters/{c}")
-
-# ================= TRANSLATION =================
+def clean_text(text):
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    return "\n\n".join(lines)
 
 def translate(text):
     res = client.chat.completions.create(
@@ -85,142 +85,152 @@ def translate(text):
                 "role": "system",
                 "content": (
                     "Translate Chinese web novel text into fluent English. "
-                    "Preserve tone, paragraph structure, and storytelling. "
+                    "Preserve paragraphs, tone, and storytelling. "
                     "Do not summarize or add content."
                 )
             },
             {"role": "user", "content": text}
         ]
     )
-    return res.choices[0].message.content
-
-# ================= SCRAPER =================
+    return res.choices[0].message.content.strip()
 
 def scrape_chapter(url):
     r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
     r.encoding = "gb2312"
     soup = BeautifulSoup(r.text, "html.parser")
 
-    raw_title = soup.find("h1").get_text(strip=True)
-    title = translate(raw_title)
+    title = soup.find("h1").get_text(strip=True)
 
     content_div = soup.find("div", class_="content")
-    if not content_div:
-        raise RuntimeError("Content not found")
+    paragraphs = [
+        p.get_text(strip=True)
+        for p in content_div.find_all("p")
+        if p.get_text(strip=True)
+    ]
+    content = clean_text("\n\n".join(paragraphs))
 
-    paragraphs = []
-    for p in content_div.find_all("p"):
-        text = p.get_text(strip=True)
-        if not text:
-            continue
-        if "作者" in text or "书名" in text:
-            continue
-        paragraphs.append(text)
+    next_url = None
+    pages = soup.find("div", class_="artic_pages")
+    if pages:
+        links = pages.find_all("a")
+        if len(links) >= 2:
+            next_url = requests.compat.urljoin(url, links[1].get("href"))
 
-    body = translate("\n\n".join(paragraphs))
-    return title, body
-
-def next_url(base_url, chapter_num):
-    return base_url.replace(f"/{chapter_num}.html", f"/{chapter_num+1}.html")
+    return title, content, next_url
 
 def save_chapter(num, title, body):
     html = f"<h1>{title}</h1>"
     for p in body.split("\n\n"):
         html += f"<p>{p}</p>"
 
+    key = f"chapters/ch{num}.html"
     s3.put_object(
         Bucket=R2_BUCKET,
-        Key=f"chapters/{num:03d}.html",
+        Key=key,
         Body=html,
         ContentType="text/html"
     )
 
-# ================= WORKER =================
+    meta.append({"num": num, "title": title, "key": key})
+    save_json(META_KEY, meta)
+
+# ======================================================
+# WORKER
+# ======================================================
 
 def worker():
-    print("🚀 WORKER STARTED")
+    while state["running"] and state["current_url"]:
+        state["chapter"] += 1
 
-    while state["running"] and state["base_url"]:
-        existing = chapter_count()
-        chapter_num = existing + 1
+        title_cn, raw, next_url = scrape_chapter(state["current_url"])
+        title_en = translate(title_cn)
+        body_en = translate(raw)
 
-        url = next_url(state["base_url"], chapter_num)
-        print("📄 FETCHING", url)
+        save_chapter(state["chapter"], title_en, body_en)
 
-        try:
-            title, body = scrape_chapter(url)
-            save_chapter(chapter_num, title, body)
-            print("✅ SAVED CHAPTER", chapter_num)
-        except Exception as e:
-            print("❌ ERROR:", e)
+        state["current_url"] = next_url
+        save_json(STATE_KEY, state)
+
+        if not next_url:
             state["running"] = False
-            save_state()
+            save_json(STATE_KEY, state)
             break
 
         time.sleep(2)
 
-# ================= ROUTES =================
+# ======================================================
+# ROUTES
+# ======================================================
+
+BASE_META = """
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#020617">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+"""
+
+BASE_CSS = """
+html,body{
+margin:0;padding:0;height:100%;
+background:radial-gradient(1200px circle at top,#0f172a 0%,#020617 60%);
+color:#e5e7eb;
+font-family:-apple-system,BlinkMacSystemFont,sans-serif;
+}
+.card{
+max-width:420px;
+margin:40px auto;
+padding:24px;
+border-radius:20px;
+background:rgba(15,23,42,.85);
+backdrop-filter:blur(14px);
+box-shadow:0 20px 40px rgba(0,0,0,.4);
+}
+button,input{
+width:100%;
+padding:14px;
+border-radius:14px;
+border:none;
+font-size:16px;
+margin-top:10px;
+}
+.btn-primary{background:linear-gradient(135deg,#22c55e,#4ade80);color:#020617;}
+.btn-danger{background:linear-gradient(135deg,#ef4444,#f87171);}
+.btn-reset{background:linear-gradient(135deg,#7c2d12,#ea580c);}
+a{color:#60a5fa;text-decoration:none;}
+"""
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-    running = state["running"]
-    progress = min(chapter_count() * 5, 100)
+    continue_btn = ""
+    if state.get("last_read"):
+        continue_btn = f'<a href="/chapter/{state["last_read"]}" class="btn-primary" style="display:block;text-align:center;padding:14px;border-radius:14px;margin-top:12px;">📖 Continue Reading</a>'
 
     return f"""
 <!DOCTYPE html>
 <html>
-<head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Novel Translator</title>
-<style>
-body {{
-  background:linear-gradient(180deg,#020617,#020617);
-  color:#e5e7eb;
-  font-family:-apple-system,BlinkMacSystemFont,sans-serif;
-}}
-.card {{
-  max-width:420px;
-  margin:40px auto;
-  background:#020617;
-  padding:24px;
-  border-radius:18px;
-}}
-button,input {{
-  width:100%;
-  padding:14px;
-  border-radius:14px;
-  border:none;
-  margin:10px 0;
-  font-size:16px;
-}}
-.start {{ background:#22c55e; color:black; }}
-.stop {{ background:#ef4444; color:white; }}
-.reset {{ background:#7c2d12; color:white; }}
-.bar {{
-  height:8px;
-  background:#38bdf8;
-  width:{progress}%;
-  border-radius:8px;
-}}
-.progress {{ background:#020617; border-radius:8px; }}
-a {{ color:#60a5fa; text-decoration:none; display:block; text-align:center; }}
-</style>
-</head>
+<head>{BASE_META}<style>{BASE_CSS}</style></head>
 <body>
 <div class="card">
-<h2>📖 Novel Translator</h2>
-<p>Status: <b>{'Running' if running else 'Stopped'}</b></p>
-<p>Chapters translated: {chapter_count()}</p>
-<div class="progress"><div class="bar"></div></div>
+<h2>📘 Novel Translator</h2>
+<p>Status: <b>{"Running" if state["running"] else "Stopped"}</b></p>
+<p>Chapters translated: {len(meta)}</p>
 
 <form action="/start" method="post">
-<input name="url" placeholder="Paste chapter 1 URL (first time only)">
-<button class="start">▶ Start / Resume</button>
+<input name="url" placeholder="Paste Chapter 1 URL (first time only)">
+<button class="btn-primary">▶ Start / Resume</button>
 </form>
 
-<form action="/stop" method="post"><button class="stop">⏸ Stop</button></form>
-<form action="/reset" method="post"><button class="reset">🗑 Reset & Start Over</button></form>
+<form action="/stop" method="post">
+<button class="btn-danger">⏸ Stop</button>
+</form>
 
+<form action="/reset" method="post">
+<button class="btn-reset">🗑 Reset & Start Over</button>
+</form>
+
+{continue_btn}
+
+<br>
 <a href="/read">📚 Read Chapters</a>
 </div>
 </body>
@@ -230,97 +240,85 @@ a {{ color:#60a5fa; text-decoration:none; display:block; text-align:center; }}
 @app.post("/start")
 def start(url: str = Form(None)):
     if url:
-        state["base_url"] = url
-    if not state["base_url"]:
-        return RedirectResponse("/", status_code=303)
+        state["current_url"] = url
+        state["chapter"] = len(meta)
 
-    state["running"] = True
-    save_state()
-    threading.Thread(target=worker, daemon=True).start()
-    return RedirectResponse("/", status_code=303)
+    if not state["running"]:
+        state["running"] = True
+        save_json(STATE_KEY, state)
+        threading.Thread(target=worker, daemon=True).start()
+
+    return RedirectResponse("/", 303)
 
 @app.post("/stop")
 def stop():
     state["running"] = False
-    save_state()
-    return RedirectResponse("/", status_code=303)
+    save_json(STATE_KEY, state)
+    return RedirectResponse("/", 303)
 
 @app.post("/reset")
 def reset():
-    delete_all_chapters()
-    state.clear()
-    state.update(DEFAULT_STATE)
-    save_state()
-    return RedirectResponse("/", status_code=303)
+    state.update({"running": False, "current_url": None, "chapter": 0, "last_read": None})
+    save_json(STATE_KEY, state)
+    save_json(META_KEY, [])
+    return RedirectResponse("/", 303)
 
 @app.get("/read", response_class=HTMLResponse)
 def read():
-    items = ""
-    for c in list_chapters():
-        items += f'<a class="item" href="/chapter/{c}">📖 {c}</a>'
-
+    items = "".join(
+        f'<li><a href="/chapter/{m["num"]}">Chapter {m["num"]} – {m["title"]}</a></li>'
+        for m in meta
+    )
     return f"""
-<html>
-<head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-body {{ background:#020617;color:#e5e7eb;font-family:sans-serif; }}
-.item {{
-  display:block;
-  background:#020617;
-  padding:14px;
-  border-radius:12px;
-  margin:10px;
-  text-decoration:none;
-  color:#e5e7eb;
-}}
-</style>
-</head>
+<html><head>{BASE_META}<style>{BASE_CSS}</style></head>
 <body>
-<h2 style="padding:16px">📚 Chapters</h2>
-{items}
-<a href="/" style="display:block;text-align:center">← Back</a>
+<div class="card">
+<h2>📚 Chapters</h2>
+<ul>{items}</ul>
+<a href="/">← Back</a>
+</div>
 </body>
 </html>
 """
 
-@app.get("/chapter/{chapter}", response_class=HTMLResponse)
-def chapter(chapter: str):
-    chapters = list_chapters()
-    idx = chapters.index(chapter)
-    next_link = f'<a href="/chapter/{chapters[idx+1]}">Next →</a>' if idx + 1 < len(chapters) else ""
+@app.get("/chapter/{num}", response_class=HTMLResponse)
+def chapter(num: int):
+    idx = num - 1
+    ch = meta[idx]
+    state["last_read"] = num
+    save_json(STATE_KEY, state)
 
-    obj = s3.get_object(Bucket=R2_BUCKET, Key=f"chapters/{chapter}")
-    content = obj["Body"].read().decode()
+    html = s3.get_object(Bucket=R2_BUCKET, Key=ch["key"])["Body"].read().decode()
+
+    prev_btn = f'<a href="/chapter/{num-1}">← Prev</a>' if num > 1 else ""
+    next_btn = f'<a href="/chapter/{num+1}">Next →</a>' if num < len(meta) else ""
+
+    options = "".join(
+        f'<option value="/chapter/{m["num"]}" {"selected" if m["num"]==num else ""}>Chapter {m["num"]}</option>'
+        for m in meta
+    )
 
     return f"""
 <html>
-<head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<head>{BASE_META}
 <style>
-body {{
-  background:#020617;
-  color:#e5e7eb;
-  font-family:Georgia,serif;
-  line-height:1.8;
-}}
-.reader {{
-  max-width:720px;
-  margin:auto;
-  padding:24px;
-}}
-p {{ font-size:18px; }}
-.nav {{ display:flex; justify-content:space-between; margin-top:40px; }}
-a {{ color:#60a5fa; text-decoration:none; }}
+{BASE_CSS}
+.reader{{max-width:720px;margin:auto;padding:24px;font-family:Georgia,serif;}}
+p{{font-size:18px;line-height:1.85}}
+.nav{{position:fixed;bottom:0;left:0;right:0;
+background:rgba(2,6,23,.95);display:flex;
+justify-content:space-between;align-items:center;
+padding:12px 16px}}
+select{{background:#020617;color:#e5e7eb;border-radius:12px;padding:8px}}
 </style>
 </head>
 <body>
-<div class="reader">
-{content}
+<div class="reader">{html}</div>
+
 <div class="nav">
-<a href="/read">← Chapters</a>
-{next_link}
-</div>
+{prev_btn}
+<select onchange="location=this.value">{options}</select>
+{next_btn}
 </div>
 </body>
 </html>
