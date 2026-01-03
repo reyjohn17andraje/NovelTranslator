@@ -1,16 +1,12 @@
-import os
-import json
-import threading
-import time
-import requests
-import boto3
-from datetime import datetime
+import os, json, threading, time, requests, boto3
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, Form
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from openai import OpenAI
 
-# ===================== ENV =====================
+# ======================================================
+# ENV
+# ======================================================
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 R2_ACCESS_KEY = os.getenv("R2_ACCESS_KEY", "").strip()
@@ -32,23 +28,17 @@ s3 = boto3.client(
 
 app = FastAPI()
 
-# ===================== STORAGE KEYS =====================
+# ======================================================
+# STORAGE KEYS
+# ======================================================
 
 STATE_KEY = "state.json"
+META_KEY = "chapters/meta.json"
 ERROR_KEY = "errors.json"
-CHAPTER_PREFIX = "chapters/"
 
-# ===================== STATE =====================
-
-state = {
-    "running": False,
-    "current_url": None,
-    "chapter": 0,
-    "visited": [],
-    "last_action": "Idle",
-}
-
-errors = []
+# ======================================================
+# HELPERS
+# ======================================================
 
 def load_json(key, default):
     try:
@@ -61,53 +51,59 @@ def save_json(key, data):
     s3.put_object(
         Bucket=R2_BUCKET,
         Key=key,
-        Body=json.dumps(data),
+        Body=json.dumps(data, ensure_ascii=False),
         ContentType="application/json"
     )
 
+# ======================================================
+# STATE
+# ======================================================
+
+state = {
+    "running": False,
+    "current_url": None,
+    "chapter": 0,
+    "last_read": None,
+    "seen_urls": [],
+    "action": "Idle"
+}
+
 state.update(load_json(STATE_KEY, {}))
-errors.extend(load_json(ERROR_KEY, []))
+meta = load_json(META_KEY, [])
+errors = load_json(ERROR_KEY, [])
 
-# ===================== HELPERS =====================
+# ======================================================
+# CORE LOGIC
+# ======================================================
 
-def list_chapters():
-    res = s3.list_objects_v2(Bucket=R2_BUCKET, Prefix=CHAPTER_PREFIX)
-    if "Contents" not in res:
-        return []
-    return sorted(obj["Key"].split("/")[-1] for obj in res["Contents"])
+def log_error(msg):
+    errors.append({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "msg": msg})
+    save_json(ERROR_KEY, errors)
 
-def save_chapter(num, text):
-    html = "".join(f"<p>{p}</p>" for p in text.split("\n\n"))
-    s3.put_object(
-        Bucket=R2_BUCKET,
-        Key=f"{CHAPTER_PREFIX}{num:03d}.html",
-        Body=html,
-        ContentType="text/html"
-    )
-
-def clean(text):
+def clean_text(text):
     return "\n\n".join(l.strip() for l in text.splitlines() if l.strip())
 
 def translate(text):
     res = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "Translate Chinese web novel into fluent English. Preserve structure."},
+            {"role": "system", "content": "Translate Chinese web novel text into fluent English. Preserve paragraphs."},
             {"role": "user", "content": text}
         ]
     )
-    return res.choices[0].message.content
+    return res.choices[0].message.content.strip()
 
-def scrape(url):
-    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+def scrape_chapter(url):
+    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
     r.encoding = "gb2312"
     soup = BeautifulSoup(r.text, "html.parser")
 
     content_div = soup.find("div", class_="content")
     if not content_div:
-        raise RuntimeError("Content not found")
+        raise RuntimeError("Content div not found")
 
-    text = clean("\n".join(p.get_text(strip=True) for p in content_div.find_all("p")))
+    paragraphs = [p.get_text(strip=True) for p in content_div.find_all("p") if p.get_text(strip=True)]
+    content = clean_text("\n\n".join(paragraphs))
 
     next_url = None
     pages = soup.find("div", class_="artic_pages")
@@ -116,283 +112,167 @@ def scrape(url):
         if len(links) >= 2:
             next_url = requests.compat.urljoin(url, links[1].get("href"))
 
-    return text, next_url
+    return content, next_url
 
-# ===================== WORKER =====================
+def save_chapter(num, body):
+    html = "".join(f"<p>{p}</p>" for p in body.split("\n\n"))
+    key = f"chapters/ch{num}.html"
+    s3.put_object(Bucket=R2_BUCKET, Key=key, Body=html, ContentType="text/html")
+    meta.append({"num": num, "key": key})
+    save_json(META_KEY, meta)
+
+def delete_all_chapters():
+    res = s3.list_objects_v2(Bucket=R2_BUCKET, Prefix="chapters/")
+    for obj in res.get("Contents", []):
+        s3.delete_object(Bucket=R2_BUCKET, Key=obj["Key"])
+
+# ======================================================
+# WORKER
+# ======================================================
 
 def worker():
     while state["running"] and state["current_url"]:
-        url = state["current_url"]
-
-        if url in state["visited"]:
+        if state["current_url"] in state["seen_urls"]:
             state["running"] = False
-            state["last_action"] = "Stopped (duplicate detected)"
-            save_json(STATE_KEY, state)
             break
+
+        state["seen_urls"].append(state["current_url"])
+        state["chapter"] += 1
 
         try:
-            state["last_action"] = f"Fetching chapter {state['chapter'] + 1}"
-            save_json(STATE_KEY, state)
+            state["action"] = "Fetching"
+            content, next_url = scrape_chapter(state["current_url"])
 
-            raw, next_url = scrape(url)
-            translated = translate(raw)
+            state["action"] = "Translating"
+            body_en = translate(content)
 
-            state["chapter"] += 1
-            save_chapter(state["chapter"], translated)
+            state["action"] = "Saving"
+            save_chapter(state["chapter"], body_en)
 
-            state["visited"].append(url)
             state["current_url"] = next_url
-            state["last_action"] = f"Saved Chapter {state['chapter']}"
-
-            save_json(STATE_KEY, state)
-
-            if not next_url:
-                state["running"] = False
-                state["last_action"] = "Completed"
-                save_json(STATE_KEY, state)
-                break
-
-            time.sleep(2)
-
         except Exception as e:
-            errors.append({
-                "chapter": state["chapter"] + 1,
-                "url": url,
-                "error": str(e),
-                "time": datetime.utcnow().isoformat()
-            })
-            save_json(ERROR_KEY, errors)
+            log_error(str(e))
             state["running"] = False
-            state["last_action"] = "Error occurred"
-            save_json(STATE_KEY, state)
+            state["action"] = "Error"
             break
 
-# ===================== ROUTES =====================
+        save_json(STATE_KEY, state)
+
+        if not next_url:
+            state["running"] = False
+            state["action"] = "Idle"
+            break
+
+        time.sleep(2)
+
+    save_json(STATE_KEY, state)
+
+# ======================================================
+# ROUTES
+# ======================================================
+
+BASE_STYLE = """
+body{margin:0;background:#020617;color:#e5e7eb;font-family:-apple-system}
+.card{max-width:420px;margin:40px auto;padding:24px;border-radius:18px;
+background:rgba(15,23,42,.9);box-shadow:0 20px 40px rgba(0,0,0,.4)}
+button,input{width:100%;padding:14px;border-radius:14px;border:none;margin-top:10px}
+a{color:#60a5fa;text-decoration:none}
+"""
+
+@app.get("/", response_class=HTMLResponse)
+def home():
+    book = state["current_url"].split("/")[2] if state["current_url"] else "No Book"
+    return f"""
+<html><head><style>{BASE_STYLE}</style>
+<script>
+setInterval(async()=>{
+  const r=await fetch('/status');const d=await r.json();
+  document.getElementById('st').innerText=d.running?'Running':'Stopped';
+  document.getElementById('act').innerText=d.action;
+  document.getElementById('cnt').innerText=d.count;
+},2000)
+</script>
+</head>
+<body>
+<div class="card">
+<h2>📘 {book}</h2>
+<p>Status: <b id="st">{'Running' if state['running'] else 'Stopped'}</b></p>
+<p>Action: <span id="act">{state['action']}</span></p>
+<p>Chapters: <span id="cnt">{len(meta)}</span></p>
+
+<form method="post" action="/start">
+<input name="url" placeholder="Paste first chapter URL">
+<button>▶ Start / Resume</button>
+</form>
+
+<form method="post" action="/stop"><button>⏸ Pause</button></form>
+<form method="post" action="/reset" onsubmit="return confirm('Reset all chapters?')">
+<button>🗑 Reset</button></form>
+
+<a href="/read">📚 Read</a><br>
+<a href="/errors">⚠ Errors</a>
+</div>
+</body></html>
+"""
 
 @app.get("/status")
 def status():
-    return {
-        "running": state["running"],
-        "chapter": state["chapter"],
-        "last_action": state["last_action"],
-        "errors": len(errors)
-    }
+    return {"running": state["running"], "action": state["action"], "count": len(meta)}
 
 @app.post("/start")
 def start(url: str = Form(None)):
     if url:
         state["current_url"] = url
-
-    if not state["current_url"]:
-        return RedirectResponse("/", 303)
-
     if not state["running"]:
         state["running"] = True
-        state["last_action"] = "Started"
-        save_json(STATE_KEY, state)
+        state["action"] = "Starting"
         threading.Thread(target=worker, daemon=True).start()
-
+    save_json(STATE_KEY, state)
     return RedirectResponse("/", 303)
 
 @app.post("/stop")
 def stop():
     state["running"] = False
-    state["last_action"] = "Paused"
+    state["action"] = "Paused"
     save_json(STATE_KEY, state)
     return RedirectResponse("/", 303)
 
 @app.post("/reset")
 def reset():
-    objs = s3.list_objects_v2(Bucket=R2_BUCKET, Prefix=CHAPTER_PREFIX)
-    for o in objs.get("Contents", []):
-        s3.delete_object(Bucket=R2_BUCKET, Key=o["Key"])
-
-    state.clear()
-    state.update({
-        "running": False,
-        "current_url": None,
-        "chapter": 0,
-        "visited": [],
-        "last_action": "Reset"
-    })
-    errors.clear()
-
+    delete_all_chapters()
+    meta.clear()
+    state.update({"running": False, "current_url": None, "chapter": 0,
+                  "last_read": None, "seen_urls": [], "action": "Idle"})
     save_json(STATE_KEY, state)
-    save_json(ERROR_KEY, errors)
-
+    save_json(META_KEY, meta)
     return RedirectResponse("/", 303)
 
-# ===================== UI =====================
+@app.get("/read", response_class=HTMLResponse)
+def read():
+    items="".join(f'<li><a href="/chapter/{m["num"]}">Chapter {m["num"]}</a></li>' for m in meta)
+    return f"<html><body><div class='card'><h2>Chapters</h2><ul>{items}</ul><a href='/'>← Back</a></div></body></html>"
 
-@app.get("/", response_class=HTMLResponse)
-def home():
+@app.get("/chapter/{num}", response_class=HTMLResponse)
+def chapter(num: int):
+    ch=meta[num-1]
+    html=s3.get_object(Bucket=R2_BUCKET,Key=ch["key"])["Body"].read().decode()
+    prev=f'<a href="/chapter/{num-1}">← Prev</a>' if num>1 else ""
+    next=f'<a href="/chapter/{num+1}">Next →</a>' if num<len(meta) else ""
     return f"""
-<!DOCTYPE html>
-<html>
-<head>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>FictionMe</title>
-<style>
-body {{
-  margin:0;
-  background:linear-gradient(180deg,#020617,#020617);
-  color:#e5e7eb;
-  font-family:-apple-system,BlinkMacSystemFont,sans-serif;
-}}
-.card {{
-  margin:20px;
-  padding:20px;
-  background:#020617;
-  border-radius:16px;
-}}
-button,input {{
-  width:100%;
-  padding:14px;
-  margin-top:10px;
-  border-radius:12px;
-  border:none;
-}}
-.bottom {{
-  position:fixed;
-  bottom:0;
-  width:100%;
-  display:flex;
-  background:#020617;
-}}
-.bottom a {{
-  flex:1;
-  padding:14px;
-  text-align:center;
-  color:#9ca3af;
-  text-decoration:none;
-}}
-</style>
-<script>
-async function poll(){{
-  const r = await fetch('/status');
-  const s = await r.json();
-  document.getElementById('stat').innerText =
-    s.running ? 'Running' : 'Stopped';
-  document.getElementById('chap').innerText = s.chapter;
-  document.getElementById('act').innerText = s.last_action;
-}}
-setInterval(poll,2000);
-</script>
-</head>
+<html><head><style>
+body{{background:#020617;color:#e5e7eb;font-family:Georgia}}
+.reader{{max-width:720px;margin:auto;padding:24px}}
+.nav{{position:fixed;bottom:0;left:0;right:0;
+background:rgba(2,6,23,.95);display:flex;gap:10px;padding:12px}}
+.nav a{{flex:1;text-align:center}}
+</style></head>
 <body>
-
-<div class="card">
-<h2>📘 Current Book</h2>
-<p>Status: <b id="stat">{'Running' if state['running'] else 'Stopped'}</b></p>
-<p>Chapters: <b id="chap">{state['chapter']}</b></p>
-<p>Action: <span id="act">{state['last_action']}</span></p>
-</div>
-
-<div class="card">
-<h3>Import</h3>
-<form method="post" action="/start"
-onsubmit="return confirm('Start or resume importing?')">
-<input name="url" placeholder="Chapter 1 URL">
-<button>▶ Start / Resume</button>
-</form>
-
-<form method="post" action="/stop"
-onsubmit="return confirm('Pause importing?')">
-<button>⏸ Pause</button>
-</form>
-
-<form method="post" action="/reset"
-onsubmit="return confirm('This will DELETE all chapters. Continue?')">
-<button style="background:#7c2d12;color:white;">🗑 Reset & Start Over</button>
-</form>
-</div>
-
-<div class="bottom">
-<a href="/">Home</a>
-<a href="/book">Book</a>
-<a href="/settings">Settings</a>
-</div>
-
-</body>
-</html>
+<div class="reader">{html}</div>
+<div class="nav">{prev}{next}</div>
+</body></html>
 """
 
-@app.get("/book", response_class=HTMLResponse)
-def book():
-    items = list_chapters()
-    links = "".join(
-        f'<li><a href="/read/{c}">Chapter {int(c[:3])}</a></li>' for c in items
-    )
-    return f"""
-<body style="background:#020617;color:#e5e7eb;padding:20px;">
-<h2>📖 Chapters</h2>
-<ul>{links}</ul>
-<a href="/">← Back</a>
-</body>
-"""
-
-@app.get("/settings", response_class=HTMLResponse)
-def settings():
-    rows = "".join(
-        f"<li>Chapter {e['chapter']}: {e['error']}</li>" for e in errors
-    )
-    return f"""
-<body style="background:#020617;color:#e5e7eb;padding:20px;">
-<h2>⚙️ Errors</h2>
-<ul>{rows or '<li>No errors</li>'}</ul>
-<a href="/">← Back</a>
-</body>
-"""
-
-@app.get("/read/{chapter}", response_class=HTMLResponse)
-def read(chapter: str):
-    obj = s3.get_object(Bucket=R2_BUCKET, Key=f"{CHAPTER_PREFIX}{chapter}")
-    content = obj["Body"].read().decode()
-    num = int(chapter[:3])
-
-    return f"""
-<html>
-<head>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-body {{
-  background:#020617;
-  color:#e5e7eb;
-  font-family:Georgia,serif;
-}}
-.reader {{
-  padding:20px;
-  max-width:700px;
-  margin:auto;
-}}
-p {{ font-size:18px; line-height:1.8; }}
-.nav {{
-  position:fixed;
-  bottom:0;
-  width:100%;
-  background:#020617;
-  display:flex;
-  gap:10px;
-  padding:10px;
-}}
-.nav a,select {{
-  flex:1;
-  padding:12px;
-}}
-</style>
-</head>
-<body>
-
-<div class="reader">{content}</div>
-
-<div class="nav">
-<a href="/read/{num-1:03d}.html">⬅ Prev</a>
-<select onchange="location=this.value">
-<option>Chapter {num}</option>
-</select>
-<a href="/read/{num+1:03d}.html">Next ➡</a>
-</div>
-
-</body>
-</html>
-"""
+@app.get("/errors", response_class=HTMLResponse)
+def view_errors():
+    items="".join(f"<li>{e['time']} — {e['msg']}</li>" for e in errors) or "<li>No errors</li>"
+    return f"<html><body><div class='card'><h2>Errors</h2><ul>{items}</ul><a href='/'>← Back</a></div></body></html>"
