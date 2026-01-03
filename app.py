@@ -11,14 +11,16 @@ from openai import OpenAI
 
 # -------------------- ENV VALIDATION --------------------
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-R2_ACCESS_KEY = os.getenv("R2_ACCESS_KEY")
-R2_SECRET_KEY = os.getenv("R2_SECRET_KEY")
-R2_ENDPOINT = os.getenv("R2_ENDPOINT")
-R2_BUCKET = os.getenv("R2_BUCKET")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+R2_ACCESS_KEY = os.getenv("R2_ACCESS_KEY", "").strip()
+R2_SECRET_KEY = os.getenv("R2_SECRET_KEY", "").strip()
+R2_ENDPOINT = os.getenv("R2_ENDPOINT", "").strip()
+R2_BUCKET = os.getenv("R2_BUCKET", "").strip()
 
-print("USING R2 BUCKET:", repr(R2_BUCKET))
-print("USING R2 ENDPOINT:", repr(R2_ENDPOINT))
+print("DEBUG ENV:")
+print("OPENAI_API_KEY:", bool(OPENAI_API_KEY))
+print("R2_ENDPOINT:", repr(R2_ENDPOINT))
+print("R2_BUCKET:", repr(R2_BUCKET))
 
 if not all([OPENAI_API_KEY, R2_ACCESS_KEY, R2_SECRET_KEY, R2_ENDPOINT, R2_BUCKET]):
     raise RuntimeError("One or more required environment variables are missing")
@@ -37,6 +39,13 @@ s3 = boto3.client(
 # -------------------- APP --------------------
 
 app = FastAPI()
+
+from fastapi import Request
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    print("🔥 UNHANDLED EXCEPTION:", repr(exc))
+    raise exc
 
 STATE_KEY = "state.json"
 
