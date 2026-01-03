@@ -271,16 +271,23 @@ function forceStart() {{
 def start(url: str = Form(None)):
     print("🟢 /start HIT with url =", repr(url))
 
-    if not state["running"]:
-        if url:
-            state["current_url"] = url
-            state["last_url"] = url
-        elif state["last_url"]:
-            state["current_url"] = state["last_url"]
-        else:
-            print("❌ No URL and no last_url")
-            return RedirectResponse("/", status_code=303)
+    if url:
+        state["current_url"] = url
+        state["last_url"] = url
+    elif not state["current_url"] and state["last_url"]:
+        state["current_url"] = state["last_url"]
 
+    if not state["current_url"]:
+        print("❌ No URL available to start")
+        return RedirectResponse("/", status_code=303)
+
+    if not state["running"]:
+        print("🚀 STARTING WORKER")
+        state["running"] = True
+        save_state()
+        threading.Thread(target=worker, daemon=True).start()
+    else:
+        print("⚠️ Worker already marked running — restarting it")
         state["running"] = True
         save_state()
         threading.Thread(target=worker, daemon=True).start()
