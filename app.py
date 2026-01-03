@@ -1,15 +1,10 @@
-import os
-import json
-import threading
-import time
-import requests
-import boto3
+import os, json, threading, time, re, requests, boto3
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 from openai import OpenAI
 
-# -------------------- ENV VALIDATION --------------------
+# ================= ENV =================
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 R2_ACCESS_KEY = os.getenv("R2_ACCESS_KEY", "").strip()
@@ -17,15 +12,10 @@ R2_SECRET_KEY = os.getenv("R2_SECRET_KEY", "").strip()
 R2_ENDPOINT = os.getenv("R2_ENDPOINT", "").strip()
 R2_BUCKET = os.getenv("R2_BUCKET", "").strip()
 
-print("DEBUG ENV:")
-print("OPENAI_API_KEY:", bool(OPENAI_API_KEY))
-print("R2_ENDPOINT:", repr(R2_ENDPOINT))
-print("R2_BUCKET:", repr(R2_BUCKET))
-
 if not all([OPENAI_API_KEY, R2_ACCESS_KEY, R2_SECRET_KEY, R2_ENDPOINT, R2_BUCKET]):
-    raise RuntimeError("One or more required environment variables are missing")
+    raise RuntimeError("Missing environment variables")
 
-# -------------------- CLIENTS --------------------
+# ================= CLIENTS =================
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -36,27 +26,19 @@ s3 = boto3.client(
     aws_secret_access_key=R2_SECRET_KEY,
 )
 
-# -------------------- APP --------------------
-
 app = FastAPI()
-
-from fastapi import Request
-
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    print("🔥 UNHANDLED EXCEPTION:", repr(exc))
-    raise exc
 
 STATE_KEY = "state.json"
 
-state = {
+DEFAULT_STATE = {
     "running": False,
     "current_url": None,
-    "last_url": None,
-    "chapter": 0
+    "base_url": None,
 }
 
-# -------------------- STATE --------------------
+state = DEFAULT_STATE.copy()
+
+# ================= STATE =================
 
 def load_state():
     try:
@@ -74,12 +56,26 @@ def save_state():
     )
 
 load_state()
+state["running"] = False
+save_state()
 
-# -------------------- HELPERS --------------------
+# ================= R2 HELPERS =================
 
-def clean_text(text):
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    return "\n\n".join(lines)
+def list_chapters():
+    res = s3.list_objects_v2(Bucket=R2_BUCKET, Prefix="chapters/")
+    if "Contents" not in res:
+        return []
+    return sorted([c["Key"].split("/")[-1] for c in res["Contents"]])
+
+def chapter_count():
+    return len(list_chapters())
+
+def delete_all_chapters():
+    chapters = list_chapters()
+    for c in chapters:
+        s3.delete_object(Bucket=R2_BUCKET, Key=f"chapters/{c}")
+
+# ================= TRANSLATION =================
 
 def translate(text):
     res = client.chat.completions.create(
@@ -89,7 +85,7 @@ def translate(text):
                 "role": "system",
                 "content": (
                     "Translate Chinese web novel text into fluent English. "
-                    "Preserve paragraph structure, tone, and storytelling. "
+                    "Preserve tone, paragraph structure, and storytelling. "
                     "Do not summarize or add content."
                 )
             },
@@ -98,38 +94,34 @@ def translate(text):
     )
     return res.choices[0].message.content
 
+# ================= SCRAPER =================
+
 def scrape_chapter(url):
     r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-    r.encoding = "gb2312"  # IMPORTANT
+    r.encoding = "gb2312"
     soup = BeautifulSoup(r.text, "html.parser")
 
-    # -------- Title --------
-    title_tag = soup.find("h1")
-    title = title_tag.get_text(strip=True) if title_tag else "Untitled Chapter"
+    raw_title = soup.find("h1").get_text(strip=True)
+    title = translate(raw_title)
 
-    # -------- Content --------
     content_div = soup.find("div", class_="content")
     if not content_div:
-        raise RuntimeError("Content div not found")
+        raise RuntimeError("Content not found")
 
     paragraphs = []
     for p in content_div.find_all("p"):
         text = p.get_text(strip=True)
-        if text:
-            paragraphs.append(text)
+        if not text:
+            continue
+        if "作者" in text or "书名" in text:
+            continue
+        paragraphs.append(text)
 
-    content = "\n\n".join(paragraphs)
+    body = translate("\n\n".join(paragraphs))
+    return title, body
 
-    # -------- Next chapter --------
-    next_url = None
-    pages = soup.find("div", class_="artic_pages")
-    if pages:
-        links = pages.find_all("a")
-        if len(links) >= 2:
-            # second <a> is always "next chapter"
-            next_url = requests.compat.urljoin(url, links[1].get("href"))
-
-    return title, clean_text(content), next_url
+def next_url(base_url, chapter_num):
+    return base_url.replace(f"/{chapter_num}.html", f"/{chapter_num+1}.html")
 
 def save_chapter(num, title, body):
     html = f"<h1>{title}</h1>"
@@ -143,43 +135,36 @@ def save_chapter(num, title, body):
         ContentType="text/html"
     )
 
-def list_chapters():
-    res = s3.list_objects_v2(Bucket=R2_BUCKET, Prefix="chapters/")
-    if "Contents" not in res:
-        return []
-    return sorted(obj["Key"].split("/")[-1] for obj in res["Contents"])
-
-def chapter_count():
-    return len(list_chapters())
-
-# -------------------- WORKER --------------------
+# ================= WORKER =================
 
 def worker():
-    while state["running"] and state["current_url"]:
-        state["chapter"] += 1
+    print("🚀 WORKER STARTED")
 
-        title, raw, next_url = scrape_chapter(state["current_url"])
-        translated = translate(raw)
-        save_chapter(state["chapter"], title, translated)
+    while state["running"] and state["base_url"]:
+        existing = chapter_count()
+        chapter_num = existing + 1
 
-        state["current_url"] = next_url
-        state["last_url"] = next_url or state["last_url"]
-        save_state()
+        url = next_url(state["base_url"], chapter_num)
+        print("📄 FETCHING", url)
 
-        if not next_url:
+        try:
+            title, body = scrape_chapter(url)
+            save_chapter(chapter_num, title, body)
+            print("✅ SAVED CHAPTER", chapter_num)
+        except Exception as e:
+            print("❌ ERROR:", e)
             state["running"] = False
             save_state()
             break
 
         time.sleep(2)
 
-# -------------------- ROUTES --------------------
+# ================= ROUTES =================
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-    status = "Running" if state["running"] else "Stopped"
-    color = "#22c55e" if state["running"] else "#ef4444"
-    progress = min(chapter_count() * 10, 100)
+    running = state["running"]
+    progress = min(chapter_count() * 5, 100)
 
     return f"""
 <!DOCTYPE html>
@@ -189,77 +174,52 @@ def home():
 <title>Novel Translator</title>
 <style>
 body {{
-    background:#0f172a;
-    color:#e5e7eb;
-    font-family:-apple-system,BlinkMacSystemFont,sans-serif;
+  background:linear-gradient(180deg,#020617,#020617);
+  color:#e5e7eb;
+  font-family:-apple-system,BlinkMacSystemFont,sans-serif;
 }}
-.container {{
-    max-width:420px;
-    margin:40px auto;
-    background:#020617;
-    padding:24px;
-    border-radius:16px;
+.card {{
+  max-width:420px;
+  margin:40px auto;
+  background:#020617;
+  padding:24px;
+  border-radius:18px;
 }}
-input,button {{
-    width:100%;
-    padding:14px;
-    border-radius:12px;
-    border:none;
-    margin-bottom:12px;
-    font-size:16px;
-}}
-button {{
-    cursor:pointer;
+button,input {{
+  width:100%;
+  padding:14px;
+  border-radius:14px;
+  border:none;
+  margin:10px 0;
+  font-size:16px;
 }}
 .start {{ background:#22c55e; color:black; }}
 .stop {{ background:#ef4444; color:white; }}
-.progress {{
-    background:#020617;
-    border-radius:8px;
-    overflow:hidden;
-}}
+.reset {{ background:#7c2d12; color:white; }}
 .bar {{
-    height:8px;
-    width:{progress}%;
-    background:#38bdf8;
+  height:8px;
+  background:#38bdf8;
+  width:{progress}%;
+  border-radius:8px;
 }}
+.progress {{ background:#020617; border-radius:8px; }}
 a {{ color:#60a5fa; text-decoration:none; display:block; text-align:center; }}
 </style>
-
-<script>
-function forceStart() {{
-    const url = document.getElementById("url").value;
-    fetch("/start", {{
-        method: "POST",
-        headers: {{
-            "Content-Type": "application/x-www-form-urlencoded"
-        }},
-        body: "url=" + encodeURIComponent(url)
-    }}).then(() => {{
-        window.location.reload();
-    }});
-}}
-</script>
 </head>
-
 <body>
-<div class="container">
+<div class="card">
 <h2>📖 Novel Translator</h2>
-<p>Status: <b style="color:{color}">{status}</b></p>
-
-<div>Chapters translated: {chapter_count()}</div>
-<div class="progress"><div class="bar"></div></div><br>
+<p>Status: <b>{'Running' if running else 'Stopped'}</b></p>
+<p>Chapters translated: {chapter_count()}</p>
+<div class="progress"><div class="bar"></div></div>
 
 <form action="/start" method="post">
-<input id="url" name="url" placeholder="Paste chapter URL (first time only)">
-<button type="submit" class="start">▶ Start / Resume</button>
+<input name="url" placeholder="Paste chapter 1 URL (first time only)">
+<button class="start">▶ Start / Resume</button>
 </form>
 
-<button class="start" onclick="forceStart()">▶ Force Start (Mobile Fix)</button>
-
-<form action="/stop" method="post">
-<button type="submit" class="stop">⏸ Stop</button>
-</form>
+<form action="/stop" method="post"><button class="stop">⏸ Stop</button></form>
+<form action="/reset" method="post"><button class="reset">🗑 Reset & Start Over</button></form>
 
 <a href="/read">📚 Read Chapters</a>
 </div>
@@ -269,29 +229,14 @@ function forceStart() {{
 
 @app.post("/start")
 def start(url: str = Form(None)):
-    print("🟢 /start HIT with url =", repr(url))
-
     if url:
-        state["current_url"] = url
-        state["last_url"] = url
-    elif not state["current_url"] and state["last_url"]:
-        state["current_url"] = state["last_url"]
-
-    if not state["current_url"]:
-        print("❌ No URL available to start")
+        state["base_url"] = url
+    if not state["base_url"]:
         return RedirectResponse("/", status_code=303)
 
-    if not state["running"]:
-        print("🚀 STARTING WORKER")
-        state["running"] = True
-        save_state()
-        threading.Thread(target=worker, daemon=True).start()
-    else:
-        print("⚠️ Worker already marked running — restarting it")
-        state["running"] = True
-        save_state()
-        threading.Thread(target=worker, daemon=True).start()
-
+    state["running"] = True
+    save_state()
+    threading.Thread(target=worker, daemon=True).start()
     return RedirectResponse("/", status_code=303)
 
 @app.post("/stop")
@@ -300,23 +245,51 @@ def stop():
     save_state()
     return RedirectResponse("/", status_code=303)
 
+@app.post("/reset")
+def reset():
+    delete_all_chapters()
+    state.clear()
+    state.update(DEFAULT_STATE)
+    save_state()
+    return RedirectResponse("/", status_code=303)
+
 @app.get("/read", response_class=HTMLResponse)
 def read():
-    chapters = list_chapters()
-    links = "".join(f'<li><a href="/chapter/{c}">{c}</a></li>' for c in chapters)
+    items = ""
+    for c in list_chapters():
+        items += f'<a class="item" href="/chapter/{c}">📖 {c}</a>'
 
     return f"""
 <html>
-<body style="background:#0f172a;color:#e5e7eb;padding:20px;">
-<h2>📚 Chapters</h2>
-<ul>{links}</ul>
-<a href="/">← Back</a>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body {{ background:#020617;color:#e5e7eb;font-family:sans-serif; }}
+.item {{
+  display:block;
+  background:#020617;
+  padding:14px;
+  border-radius:12px;
+  margin:10px;
+  text-decoration:none;
+  color:#e5e7eb;
+}}
+</style>
+</head>
+<body>
+<h2 style="padding:16px">📚 Chapters</h2>
+{items}
+<a href="/" style="display:block;text-align:center">← Back</a>
 </body>
 </html>
 """
 
 @app.get("/chapter/{chapter}", response_class=HTMLResponse)
 def chapter(chapter: str):
+    chapters = list_chapters()
+    idx = chapters.index(chapter)
+    next_link = f'<a href="/chapter/{chapters[idx+1]}">Next →</a>' if idx + 1 < len(chapters) else ""
+
     obj = s3.get_object(Bucket=R2_BUCKET, Key=f"chapters/{chapter}")
     content = obj["Body"].read().decode()
 
@@ -326,24 +299,28 @@ def chapter(chapter: str):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 body {{
-    background:#020617;
-    color:#e5e7eb;
-    font-family:Georgia,serif;
-    line-height:1.8;
+  background:#020617;
+  color:#e5e7eb;
+  font-family:Georgia,serif;
+  line-height:1.8;
 }}
 .reader {{
-    max-width:720px;
-    margin:auto;
-    padding:24px;
+  max-width:720px;
+  margin:auto;
+  padding:24px;
 }}
-p {{ font-size:18px; margin-bottom:18px; }}
-a {{ color:#60a5fa; }}
+p {{ font-size:18px; }}
+.nav {{ display:flex; justify-content:space-between; margin-top:40px; }}
+a {{ color:#60a5fa; text-decoration:none; }}
 </style>
 </head>
 <body>
 <div class="reader">
 {content}
-<a href="/read">← Back</a>
+<div class="nav">
+<a href="/read">← Chapters</a>
+{next_link}
+</div>
 </div>
 </body>
 </html>
