@@ -195,20 +195,24 @@ body {{
 }}
 .container {{
     max-width:420px;
-    margin:60px auto;
+    margin:40px auto;
     background:#020617;
     padding:24px;
     border-radius:16px;
 }}
 input,button {{
     width:100%;
-    padding:12px;
-    border-radius:10px;
+    padding:14px;
+    border-radius:12px;
     border:none;
-    margin-bottom:10px;
+    margin-bottom:12px;
+    font-size:16px;
 }}
-.start {{ background:#22c55e; }}
-.stop {{ background:#ef4444; }}
+button {{
+    cursor:pointer;
+}}
+.start {{ background:#22c55e; color:black; }}
+.stop {{ background:#ef4444; color:white; }}
 .progress {{
     background:#020617;
     border-radius:8px;
@@ -221,7 +225,23 @@ input,button {{
 }}
 a {{ color:#60a5fa; text-decoration:none; display:block; text-align:center; }}
 </style>
+
+<script>
+function forceStart() {{
+    const url = document.getElementById("url").value;
+    fetch("/start", {{
+        method: "POST",
+        headers: {{
+            "Content-Type": "application/x-www-form-urlencoded"
+        }},
+        body: "url=" + encodeURIComponent(url)
+    }}).then(() => {{
+        window.location.reload();
+    }});
+}}
+</script>
 </head>
+
 <body>
 <div class="container">
 <h2>📖 Novel Translator</h2>
@@ -231,12 +251,14 @@ a {{ color:#60a5fa; text-decoration:none; display:block; text-align:center; }}
 <div class="progress"><div class="bar"></div></div><br>
 
 <form action="/start" method="post">
-<input name="url" placeholder="Paste chapter URL (only first time)">
-<button class="start">▶ Start / Resume</button>
+<input id="url" name="url" placeholder="Paste chapter URL (first time only)">
+<button type="submit" class="start">▶ Start / Resume</button>
 </form>
 
+<button class="start" onclick="forceStart()">▶ Force Start (Mobile Fix)</button>
+
 <form action="/stop" method="post">
-<button class="stop">⏸ Stop</button>
+<button type="submit" class="stop">⏸ Stop</button>
 </form>
 
 <a href="/read">📚 Read Chapters</a>
@@ -247,6 +269,8 @@ a {{ color:#60a5fa; text-decoration:none; display:block; text-align:center; }}
 
 @app.post("/start")
 def start(url: str = Form(None)):
+    print("🟢 /start HIT with url =", repr(url))
+
     if not state["running"]:
         if url:
             state["current_url"] = url
@@ -254,6 +278,7 @@ def start(url: str = Form(None)):
         elif state["last_url"]:
             state["current_url"] = state["last_url"]
         else:
+            print("❌ No URL and no last_url")
             return RedirectResponse("/", status_code=303)
 
         state["running"] = True
