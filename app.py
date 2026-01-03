@@ -100,17 +100,34 @@ def translate(text):
 
 def scrape_chapter(url):
     r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-    r.encoding = r.apparent_encoding
+    r.encoding = "gb2312"  # IMPORTANT
     soup = BeautifulSoup(r.text, "html.parser")
 
-    title = soup.find("h1").get_text(strip=True)
-    content = soup.find("div", id="content").get_text("\n", strip=True)
+    # -------- Title --------
+    title_tag = soup.find("h1")
+    title = title_tag.get_text(strip=True) if title_tag else "Untitled Chapter"
 
+    # -------- Content --------
+    content_div = soup.find("div", class_="content")
+    if not content_div:
+        raise RuntimeError("Content div not found")
+
+    paragraphs = []
+    for p in content_div.find_all("p"):
+        text = p.get_text(strip=True)
+        if text:
+            paragraphs.append(text)
+
+    content = "\n\n".join(paragraphs)
+
+    # -------- Next chapter --------
     next_url = None
-    for a in soup.find_all("a"):
-        if "下一章" in a.get_text():
-            next_url = requests.compat.urljoin(url, a.get("href"))
-            break
+    pages = soup.find("div", class_="artic_pages")
+    if pages:
+        links = pages.find_all("a")
+        if len(links) >= 2:
+            # second <a> is always "next chapter"
+            next_url = requests.compat.urljoin(url, links[1].get("href"))
 
     return title, clean_text(content), next_url
 
