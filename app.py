@@ -9,40 +9,53 @@ from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 from openai import OpenAI
 
-# ---- OpenAI ----
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# -------------------- ENV VALIDATION --------------------
 
-# ---- Cloudflare R2 (S3 compatible) ----
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+R2_ACCESS_KEY = os.getenv("R2_ACCESS_KEY")
+R2_SECRET_KEY = os.getenv("R2_SECRET_KEY")
+R2_ENDPOINT = os.getenv("R2_ENDPOINT")
+R2_BUCKET = os.getenv("R2_BUCKET")
+
+if not all([OPENAI_API_KEY, R2_ACCESS_KEY, R2_SECRET_KEY, R2_ENDPOINT, R2_BUCKET]):
+    raise RuntimeError("One or more required environment variables are missing")
+
+# -------------------- CLIENTS --------------------
+
+client = OpenAI(api_key=OPENAI_API_KEY)
+
 s3 = boto3.client(
     "s3",
-    endpoint_url=os.getenv("R2_ENDPOINT"),
-    aws_access_key_id=os.getenv("R2_ACCESS_KEY"),
-    aws_secret_access_key=os.getenv("R2_SECRET_KEY"),
+    endpoint_url=R2_ENDPOINT,
+    aws_access_key_id=R2_ACCESS_KEY,
+    aws_secret_access_key=R2_SECRET_KEY,
 )
 
-BUCKET = os.getenv("R2_BUCKET")
+# -------------------- APP --------------------
 
 app = FastAPI()
 
-# ---- Persistent state (stored in R2) ----
+STATE_KEY = "state.json"
+
 state = {
     "running": False,
     "current_url": None,
+    "last_url": None,
     "chapter": 0
 }
 
-STATE_KEY = "state.json"
+# -------------------- STATE --------------------
 
 def load_state():
     try:
-        obj = s3.get_object(Bucket=BUCKET, Key=STATE_KEY)
+        obj = s3.get_object(Bucket=R2_BUCKET, Key=STATE_KEY)
         state.update(json.loads(obj["Body"].read().decode()))
     except:
         pass
 
 def save_state():
     s3.put_object(
-        Bucket=BUCKET,
+        Bucket=R2_BUCKET,
         Key=STATE_KEY,
         Body=json.dumps(state),
         ContentType="application/json"
@@ -50,7 +63,7 @@ def save_state():
 
 load_state()
 
-# ---- Helpers ----
+# -------------------- HELPERS --------------------
 
 def clean_text(text):
     lines = [l.strip() for l in text.splitlines() if l.strip()]
@@ -64,7 +77,7 @@ def translate(text):
                 "role": "system",
                 "content": (
                     "Translate Chinese web novel text into fluent English. "
-                    "Preserve paragraph structure and storytelling tone. "
+                    "Preserve paragraph structure, tone, and storytelling. "
                     "Do not summarize or add content."
                 )
             },
@@ -95,19 +108,22 @@ def save_chapter(num, title, body):
         html += f"<p>{p}</p>"
 
     s3.put_object(
-        Bucket=BUCKET,
+        Bucket=R2_BUCKET,
         Key=f"chapters/{num:03d}.html",
         Body=html,
         ContentType="text/html"
     )
 
 def list_chapters():
-    res = s3.list_objects_v2(Bucket=BUCKET, Prefix="chapters/")
+    res = s3.list_objects_v2(Bucket=R2_BUCKET, Prefix="chapters/")
     if "Contents" not in res:
         return []
     return sorted(obj["Key"].split("/")[-1] for obj in res["Contents"])
 
-# ---- Background worker ----
+def chapter_count():
+    return len(list_chapters())
+
+# -------------------- WORKER --------------------
 
 def worker():
     while state["running"] and state["current_url"]:
@@ -118,6 +134,7 @@ def worker():
         save_chapter(state["chapter"], title, translated)
 
         state["current_url"] = next_url
+        state["last_url"] = next_url or state["last_url"]
         save_state()
 
         if not next_url:
@@ -127,31 +144,93 @@ def worker():
 
         time.sleep(2)
 
-# ---- Routes ----
+# -------------------- ROUTES --------------------
 
 @app.get("/", response_class=HTMLResponse)
 def home():
     status = "Running" if state["running"] else "Stopped"
+    color = "#22c55e" if state["running"] else "#ef4444"
+    progress = min(chapter_count() * 10, 100)
+
     return f"""
-    <h2>Novel Translator</h2>
-    <p>Status: {status}</p>
-    <form action="/start" method="post">
-        <input name="url" placeholder="Start chapter URL" style="width:300px">
-        <button type="submit">Start</button>
-    </form>
-    <form action="/stop" method="post">
-        <button type="submit">Stop</button>
-    </form>
-    <a href="/read">Read Chapters</a>
-    """
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Novel Translator</title>
+<style>
+body {{
+    background:#0f172a;
+    color:#e5e7eb;
+    font-family:-apple-system,BlinkMacSystemFont,sans-serif;
+}}
+.container {{
+    max-width:420px;
+    margin:60px auto;
+    background:#020617;
+    padding:24px;
+    border-radius:16px;
+}}
+input,button {{
+    width:100%;
+    padding:12px;
+    border-radius:10px;
+    border:none;
+    margin-bottom:10px;
+}}
+.start {{ background:#22c55e; }}
+.stop {{ background:#ef4444; }}
+.progress {{
+    background:#020617;
+    border-radius:8px;
+    overflow:hidden;
+}}
+.bar {{
+    height:8px;
+    width:{progress}%;
+    background:#38bdf8;
+}}
+a {{ color:#60a5fa; text-decoration:none; display:block; text-align:center; }}
+</style>
+</head>
+<body>
+<div class="container">
+<h2>📖 Novel Translator</h2>
+<p>Status: <b style="color:{color}">{status}</b></p>
+
+<div>Chapters translated: {chapter_count()}</div>
+<div class="progress"><div class="bar"></div></div><br>
+
+<form action="/start" method="post">
+<input name="url" placeholder="Paste chapter URL (only first time)">
+<button class="start">▶ Start / Resume</button>
+</form>
+
+<form action="/stop" method="post">
+<button class="stop">⏸ Stop</button>
+</form>
+
+<a href="/read">📚 Read Chapters</a>
+</div>
+</body>
+</html>
+"""
 
 @app.post("/start")
-def start(url: str = Form(...)):
+def start(url: str = Form(None)):
     if not state["running"]:
+        if url:
+            state["current_url"] = url
+            state["last_url"] = url
+        elif state["last_url"]:
+            state["current_url"] = state["last_url"]
+        else:
+            return RedirectResponse("/", status_code=303)
+
         state["running"] = True
-        state["current_url"] = url
         save_state()
         threading.Thread(target=worker, daemon=True).start()
+
     return RedirectResponse("/", status_code=303)
 
 @app.post("/stop")
@@ -163,12 +242,48 @@ def stop():
 @app.get("/read", response_class=HTMLResponse)
 def read():
     chapters = list_chapters()
-    links = "".join(
-        f'<li><a href="/chapter/{c}">{c}</a></li>' for c in chapters
-    )
-    return f"<h2>Chapters</h2><ul>{links}</ul><a href='/'>Back</a>"
+    links = "".join(f'<li><a href="/chapter/{c}">{c}</a></li>' for c in chapters)
+
+    return f"""
+<html>
+<body style="background:#0f172a;color:#e5e7eb;padding:20px;">
+<h2>📚 Chapters</h2>
+<ul>{links}</ul>
+<a href="/">← Back</a>
+</body>
+</html>
+"""
 
 @app.get("/chapter/{chapter}", response_class=HTMLResponse)
 def chapter(chapter: str):
-    obj = s3.get_object(Bucket=BUCKET, Key=f"chapters/{chapter}")
-    return obj["Body"].read().decode()
+    obj = s3.get_object(Bucket=R2_BUCKET, Key=f"chapters/{chapter}")
+    content = obj["Body"].read().decode()
+
+    return f"""
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body {{
+    background:#020617;
+    color:#e5e7eb;
+    font-family:Georgia,serif;
+    line-height:1.8;
+}}
+.reader {{
+    max-width:720px;
+    margin:auto;
+    padding:24px;
+}}
+p {{ font-size:18px; margin-bottom:18px; }}
+a {{ color:#60a5fa; }}
+</style>
+</head>
+<body>
+<div class="reader">
+{content}
+<a href="/read">← Back</a>
+</div>
+</body>
+</html>
+"""
