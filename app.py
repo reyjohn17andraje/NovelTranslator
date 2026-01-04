@@ -185,12 +185,16 @@ def home():
     return f"""
 <html><head><style>{BASE_STYLE}</style>
 <script>
-setInterval(async()=>{
-  const r=await fetch('/status');const d=await r.json();
-  document.getElementById('st').innerText=d.running?'Running':'Stopped';
-  document.getElementById('act').innerText=d.action;
-  document.getElementById('cnt').innerText=d.count;
-},2000)
+async function pollStatus(){
+  try {
+    const r = await fetch('/status');
+    const d = await r.json();
+    document.getElementById('st').innerText = d.running ? 'Running' : 'Stopped';
+    document.getElementById('act').innerText = d.action;
+    document.getElementById('cnt').innerText = d.count;
+  } catch(e){}
+}
+setInterval(pollStatus, 2000);
 </script>
 </head>
 <body>
