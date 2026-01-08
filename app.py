@@ -1,7 +1,8 @@
 import os, json, threading, time, requests, boto3
-from bs4 import BeautifulSoup
 from fastapi import FastAPI, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from bs4 import BeautifulSoup
 from openai import OpenAI
 
 # ======================================================
@@ -27,6 +28,7 @@ s3 = boto3.client(
 )
 
 app = FastAPI()
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # ======================================================
 # STORAGE
@@ -51,19 +53,16 @@ def save_json(key, data):
         ContentType="application/json"
     )
 
-# ======================================================
-# STATE
-# ======================================================
-
 state = {
     "running": False,
     "current_url": None,
     "chapter": 0,
     "seen_urls": [],
-    "action": "Idle"
+    "action": "Idle",
+    "book_title": "Untitled Novel",
 }
-
 state.update(load_json(STATE_KEY, {}))
+
 meta = load_json(META_KEY, [])
 errors = load_json(ERROR_KEY, [])
 
@@ -74,9 +73,6 @@ errors = load_json(ERROR_KEY, [])
 def log_error(msg):
     errors.append({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "msg": msg})
     save_json(ERROR_KEY, errors)
-
-def clean_text(text):
-    return "\n\n".join(l.strip() for l in text.splitlines() if l.strip())
 
 def translate(text):
     res = client.chat.completions.create(
@@ -93,12 +89,20 @@ def scrape_chapter(url):
     r.encoding = "gb2312"
     soup = BeautifulSoup(r.text, "html.parser")
 
+    title = soup.find("h1")
+    if title and state["chapter"] == 0:
+        state["book_title"] = title.get_text(strip=True)
+
     content_div = soup.find("div", class_="content")
     if not content_div:
         raise RuntimeError("Content not found")
 
-    paragraphs = [p.get_text(strip=True) for p in content_div.find_all("p") if p.get_text(strip=True)]
-    content = clean_text("\n\n".join(paragraphs))
+    paragraphs = [
+        p.get_text(strip=True)
+        for p in content_div.find_all("p")
+        if p.get_text(strip=True)
+    ]
+    content = "\n\n".join(paragraphs)
 
     next_url = None
     nav = soup.find("div", class_="artic_pages")
@@ -156,131 +160,73 @@ def worker():
     save_json(STATE_KEY, state)
 
 # ======================================================
-# LAYOUT
-# ======================================================
-
-BASE_STYLE = """
-:root {{
- --bg:#020617;
- --panel:#0f172a;
- --soft:#1e293b;
- --text:#e5e7eb;
- --muted:#94a3b8;
- --accent:#38bdf8;
-}}
-*{{box-sizing:border-box}}
-body{{margin:0;font-family:-apple-system;background:var(--bg);color:var(--text)}}
-a{{color:var(--accent);text-decoration:none}}
-.header{{padding:14px 20px;background:var(--panel);display:flex;justify-content:space-between}}
-.container{{max-width:1100px;margin:auto;padding:20px}}
-.tabs{{display:flex;gap:20px;border-bottom:1px solid var(--soft)}}
-.tab{{padding:10px 0;color:var(--muted)}}
-.tab.active{{color:var(--accent);border-bottom:2px solid var(--accent)}}
-.card{{background:var(--panel);border-radius:16px;padding:20px;margin-top:20px}}
-button,input{{padding:12px;border-radius:12px;border:none;width:100%;margin-top:10px}}
-.reader{{max-width:720px;margin:auto;padding:20px;line-height:1.75;font-family:Georgia}}
-.nav{{position:fixed;bottom:0;left:0;right:0;background:var(--panel);display:flex;gap:10px;padding:12px}}
-.nav a{{flex:1;text-align:center}}
-@media(max-width:640px){{
- .container{{padding:12px}}
- .tabs{{overflow-x:auto}}
-}}
-"""
-
-def layout(title, tab, content):
-    def t(name): return "tab active" if tab == name else "tab"
-    return f"""
-<html>
-<head><style>{BASE_STYLE}</style></head>
-<body>
-<div class="header">
-<b>{title}</b>
-<a href="/settings">⚙</a>
-</div>
-<div class="container">
-<div class="tabs">
-<a class="{t('chapters')}" href="/">Chapters</a>
-<a class="{t('about')}" href="/about">About</a>
-<a class="{t('settings')}" href="/settings">Settings</a>
-</div>
-{content}
-</div>
-</body>
-</html>
-"""
-
-# ======================================================
 # ROUTES
 # ======================================================
 
 @app.get("/", response_class=HTMLResponse)
-def chapters():
-    items = "".join(
-        f'<li><a href="/read/{m["num"]}">Chapter {m["num"]}</a></li>' for m in meta
-    ) or "<p>No chapters yet.</p>"
-    return layout("Web Novel", "chapters", f"<div class='card'><ul>{items}</ul></div>")
+def ui():
+    with open("static/reader.html", "r", encoding="utf-8") as f:
+        return f.read()
 
-@app.get("/read/{num}", response_class=HTMLResponse)
-def read(num: int):
+@app.get("/api/book")
+def book():
+    return {
+        "title": state.get("book_title"),
+        "chapters": len(meta),
+        "last_read": state.get("chapter", 1)
+    }
+
+@app.get("/api/chapters")
+def chapters():
+    return meta
+
+@app.get("/api/chapter/{num}")
+def chapter(num: int):
     if num < 1 or num > len(meta):
-        return RedirectResponse("/")
+        return JSONResponse(status_code=404, content={"error": "Not found"})
     ch = meta[num - 1]
     html = s3.get_object(Bucket=R2_BUCKET, Key=ch["key"])["Body"].read().decode()
-    prev = f'<a href="/read/{num-1}">← Prev</a>' if num > 1 else ""
-    next = f'<a href="/read/{num+1}">Next →</a>' if num < len(meta) else ""
-    return f"""
-<html>
-<head><style>{BASE_STYLE}</style></head>
-<body>
-<div class="reader">{html}</div>
-<div class="nav">{prev}{next}</div>
-</body>
-</html>
-"""
+    return {"num": num, "html": html}
 
-@app.get("/settings", response_class=HTMLResponse)
-def settings():
-    status = "Running" if state["running"] else "Idle"
-    return layout("Settings", "settings", f"""
-<div class="card">
-<b>Status:</b> {status}<br>
-<b>Action:</b> {state["action"]}
-<form method="post" action="/start">
-<input name="url" placeholder="First chapter URL">
-<button>Start / Resume</button>
-</form>
-<form method="post" action="/stop"><button>Pause</button></form>
-<form method="post" action="/reset"><button>Reset Book</button></form>
-<a href="/errors">View Errors</a>
-</div>
-""")
+@app.get("/api/status")
+def status():
+    return {
+        "running": state["running"],
+        "action": state["action"],
+        "chapter": state["chapter"],
+        "errors": len(errors)
+    }
 
-@app.post("/start")
-def start(url: str = Form(None)):
-    if url:
-        state["current_url"] = url
+@app.post("/api/import/start")
+def start(url: str = Form(...)):
+    state["current_url"] = url
     if not state["running"]:
         state["running"] = True
         threading.Thread(target=worker, daemon=True).start()
     save_json(STATE_KEY, state)
-    return RedirectResponse("/settings", 303)
+    return {"ok": True}
 
-@app.post("/stop")
+@app.post("/api/import/stop")
 def stop():
     state["running"] = False
     save_json(STATE_KEY, state)
-    return RedirectResponse("/settings", 303)
+    return {"ok": True}
 
-@app.post("/reset")
+@app.post("/api/import/reset")
 def reset():
     delete_all()
     meta.clear()
-    state.update({"running": False, "current_url": None, "chapter": 0, "seen_urls": [], "action": "Idle"})
+    state.update({
+        "running": False,
+        "current_url": None,
+        "chapter": 0,
+        "seen_urls": [],
+        "action": "Idle"
+    })
     save_json(STATE_KEY, state)
     save_json(META_KEY, meta)
-    return RedirectResponse("/settings", 303)
+    return {"ok": True}
 
-@app.get("/errors", response_class=HTMLResponse)
-def view_errors():
-    items = "".join(f"<li>{e['time']} — {e['msg']}</li>" for e in errors) or "<li>No errors</li>"
-    return layout("Errors", "settings", f"<div class='card'><ul>{items}</ul></div>")
+@app.get("/api/errors")
+def get_errors():
+    return errors
