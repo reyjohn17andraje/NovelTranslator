@@ -1,6 +1,6 @@
 import os, json, threading, time, requests, boto3
 from fastapi import FastAPI, Form
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from bs4 import BeautifulSoup
 from openai import OpenAI
@@ -37,6 +37,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 STATE_KEY = "state.json"
 META_KEY = "chapters/meta.json"
 ERROR_KEY = "errors.json"
+COVER_KEY = "covers/book.jpg"
 
 def load_json(key, default):
     try:
@@ -59,7 +60,7 @@ state = {
     "chapter": 0,
     "seen_urls": [],
     "action": "Idle",
-    "book_title": "Untitled Novel",
+    "book_title": "Untitled Novel"
 }
 state.update(load_json(STATE_KEY, {}))
 
@@ -67,7 +68,7 @@ meta = load_json(META_KEY, [])
 errors = load_json(ERROR_KEY, [])
 
 # ======================================================
-# CORE
+# CORE HELPERS
 # ======================================================
 
 def log_error(msg):
@@ -84,24 +85,46 @@ def translate(text):
     )
     return res.choices[0].message.content.strip()
 
+def generate_title(text):
+    res = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "Generate a concise chapter title (max 8 words)."},
+            {"role": "user", "content": text[:2000]}
+        ]
+    )
+    return res.choices[0].message.content.strip()
+
+def generate_cover(title):
+    try:
+        img = client.images.generate(
+            model="gpt-image-1",
+            prompt=f"Book cover art for a web novel titled '{title}', fantasy illustration, no text",
+            size="1024x1536"
+        )
+        img_bytes = requests.get(img.data[0].url).content
+        s3.put_object(
+            Bucket=R2_BUCKET,
+            Key=COVER_KEY,
+            Body=img_bytes,
+            ContentType="image/jpeg"
+        )
+    except Exception as e:
+        log_error(f"Cover generation failed: {e}")
+
 def scrape_chapter(url):
     r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
     r.encoding = "gb2312"
     soup = BeautifulSoup(r.text, "html.parser")
 
-    title = soup.find("h1")
-    if title and state["chapter"] == 0:
-        state["book_title"] = title.get_text(strip=True)
+    title_el = soup.find("h1")
+    chapter_title = title_el.get_text(strip=True) if title_el else None
 
     content_div = soup.find("div", class_="content")
     if not content_div:
         raise RuntimeError("Content not found")
 
-    paragraphs = [
-        p.get_text(strip=True)
-        for p in content_div.find_all("p")
-        if p.get_text(strip=True)
-    ]
+    paragraphs = [p.get_text(strip=True) for p in content_div.find_all("p") if p.get_text(strip=True)]
     content = "\n\n".join(paragraphs)
 
     next_url = None
@@ -111,25 +134,29 @@ def scrape_chapter(url):
         if len(links) >= 2:
             next_url = requests.compat.urljoin(url, links[1].get("href"))
 
-    return content, next_url
+    return content, chapter_title, next_url
 
-def save_chapter(num, body):
+def save_chapter(num, body, title):
     html = "".join(f"<p>{p}</p>" for p in body.split("\n\n"))
     key = f"chapters/ch{num}.html"
     s3.put_object(Bucket=R2_BUCKET, Key=key, Body=html, ContentType="text/html")
-    meta.append({"num": num, "key": key})
+    meta.append({"num": num, "title": title, "key": key})
     save_json(META_KEY, meta)
 
 def delete_all():
-    res = s3.list_objects_v2(Bucket=R2_BUCKET, Prefix="chapters/")
-    for obj in res.get("Contents", []):
-        s3.delete_object(Bucket=R2_BUCKET, Key=obj["Key"])
+    for prefix in ["chapters/", "covers/"]:
+        res = s3.list_objects_v2(Bucket=R2_BUCKET, Prefix=prefix)
+        for obj in res.get("Contents", []):
+            s3.delete_object(Bucket=R2_BUCKET, Key=obj["Key"])
 
 # ======================================================
 # WORKER
 # ======================================================
 
 def worker():
+    if state["chapter"] == 0:
+        generate_cover(state["book_title"])
+
     while state["running"] and state["current_url"]:
         if state["current_url"] in state["seen_urls"]:
             break
@@ -139,11 +166,15 @@ def worker():
         state["action"] = "Fetching"
 
         try:
-            content, next_url = scrape_chapter(state["current_url"])
+            content, title, next_url = scrape_chapter(state["current_url"])
             state["action"] = "Translating"
             body = translate(content)
+
+            if not title:
+                title = generate_title(body)
+
             state["action"] = "Saving"
-            save_chapter(state["chapter"], body)
+            save_chapter(state["chapter"], body, title)
             state["current_url"] = next_url
         except Exception as e:
             log_error(str(e))
@@ -160,21 +191,25 @@ def worker():
     save_json(STATE_KEY, state)
 
 # ======================================================
-# ROUTES
+# API
 # ======================================================
 
 @app.get("/", response_class=HTMLResponse)
 def ui():
-    with open("static/reader.html", "r", encoding="utf-8") as f:
+    with open("static/reader.html", encoding="utf-8") as f:
         return f.read()
 
 @app.get("/api/book")
 def book():
     return {
-        "title": state.get("book_title"),
+        "title": state["book_title"],
         "chapters": len(meta),
-        "last_read": state.get("chapter", 1)
+        "last_read": state["chapter"]
     }
+
+@app.get("/api/book/cover")
+def cover():
+    return JSONResponse({"url": f"/r2/{COVER_KEY}"})
 
 @app.get("/api/chapters")
 def chapters():
@@ -186,16 +221,7 @@ def chapter(num: int):
         return JSONResponse(status_code=404, content={"error": "Not found"})
     ch = meta[num - 1]
     html = s3.get_object(Bucket=R2_BUCKET, Key=ch["key"])["Body"].read().decode()
-    return {"num": num, "html": html}
-
-@app.get("/api/status")
-def status():
-    return {
-        "running": state["running"],
-        "action": state["action"],
-        "chapter": state["chapter"],
-        "errors": len(errors)
-    }
+    return {"num": num, "title": ch["title"], "html": html}
 
 @app.post("/api/import/start")
 def start(url: str = Form(...)):
@@ -227,6 +253,19 @@ def reset():
     save_json(META_KEY, meta)
     return {"ok": True}
 
-@app.get("/api/errors")
-def get_errors():
-    return errors
+@app.get("/api/status/stream")
+def status_stream():
+    def stream():
+        last = None
+        while True:
+            current = json.dumps({
+                "running": state["running"],
+                "action": state["action"],
+                "chapter": state["chapter"],
+                "errors": len(errors)
+            })
+            if current != last:
+                yield f"data: {current}\n\n"
+                last = current
+            time.sleep(1)
+    return StreamingResponse(stream(), media_type="text/event-stream")
