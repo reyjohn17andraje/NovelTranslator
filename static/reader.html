@@ -1,603 +1,212 @@
-<!doctype element>
+<!doctype html>
 <html lang="en" class="h-full">
- <head>
+<head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Digital Reader</title>
+
   <script src="/_sdk/element_sdk.js"></script>
+  <script src="/_sdk/data_sdk.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@400;600;700&amp;family=Inter:wght@400;500;600&amp;display=swap" rel="stylesheet">
-  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@400;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+
   <style>
-    body {
-      box-sizing: border-box;
-    }
-    
-    .reader-font {
-      font-family: 'Crimson Pro', Georgia, serif;
-    }
-    
-    .ui-font {
-      font-family: 'Inter', system-ui, sans-serif;
-    }
-    
-    .reading-text {
-      line-height: 1.8;
-      letter-spacing: 0.01em;
-    }
-    
-    .page {
-      display: none;
-      animation: fadeIn 0.4s ease-in;
-    }
-    
-    .page.active {
-      display: flex;
-    }
-    
-    @keyframes fadeIn {
-      from { opacity: 0; }
-      to { opacity: 1; }
-    }
-    
-    .control-btn {
-      transition: all 0.2s ease;
-    }
-    
-    .control-btn:hover {
-      transform: scale(1.05);
-    }
-    
-    .control-btn:active {
-      transform: scale(0.95);
-    }
-    
-    .book-card {
-      transition: all 0.3s ease;
-      cursor: pointer;
-    }
-    
-    .book-card:hover {
-      transform: translateY(-8px);
-      box-shadow: 0 20px 40px rgba(44, 24, 16, 0.15);
-    }
-    
-    .nav-item {
-      transition: all 0.2s ease;
-    }
-    
-    .nav-item.active {
-      transform: translateY(-4px);
-    }
-    
-    .progress-ring {
-      transition: stroke-dashoffset 0.3s ease;
-    }
-    
-    .stat-card {
-      background: rgba(212, 175, 55, 0.1);
-      border: 1px solid rgba(212, 175, 55, 0.2);
-      transition: all 0.3s ease;
-    }
-    
-    .stat-card:hover {
-      background: rgba(212, 175, 55, 0.15);
-      transform: translateY(-2px);
-    }
-    
-    @media (max-width: 640px) {
-      .reading-text {
-        line-height: 1.7;
-      }
-    }
+    body { box-sizing: border-box; }
+    .reader-font { font-family: 'Crimson Pro', Georgia, serif; }
+    .ui-font { font-family: 'Inter', system-ui, sans-serif; }
+    .reading-text { line-height: 1.8; letter-spacing: .01em; }
+    .page { display:none; animation:fadeIn .3s ease; }
+    .page.active { display:flex; }
+    @keyframes fadeIn { from{opacity:0} to{opacity:1} }
+    .control-btn { transition:.2s; }
+    .control-btn:hover { transform:scale(1.05); }
+    .control-btn:active { transform:scale(.95); }
+    .book-card { cursor:pointer; transition:.3s; }
+    .book-card:hover { transform:translateY(-6px); box-shadow:0 20px 40px rgba(0,0,0,.15); }
+    .nav-item.active { transform:translateY(-4px); color:#D4AF37 }
   </style>
-  <style>@view-transition { navigation: auto; }</style>
-  <script src="/_sdk/data_sdk.js" type="text/javascript"></script>
- </head>
- <body class="h-full ui-font">
-  <div class="w-full h-full flex flex-col" id="app-wrapper" style="background: linear-gradient(135deg, #FFF8E7 0%, #F5E6D3 100%);"><!-- HOME PAGE -->
-   <div id="home-page" class="page active flex-col flex-1 overflow-hidden">
-    <div class="flex-1 overflow-y-auto px-4 sm:px-8 py-8 pb-24">
-     <div class="max-w-4xl mx-auto"><!-- Header -->
-      <div class="mb-12 text-center">
-       <h1 class="reader-font font-bold text-4xl sm:text-5xl mb-3" style="color: #2C1810;">Welcome Back</h1>
-       <p class="ui-font text-lg" style="color: #8B4513; opacity: 0.8;">Continue your reading journey</p>
-      </div><!-- Currently Reading -->
-      <div class="mb-12">
-       <h2 class="ui-font font-semibold text-xl mb-6" style="color: #2C1810;">Currently Reading</h2>
-       <div class="p-6 rounded-2xl flex flex-col sm:flex-row gap-6 items-start sm:items-center" style="background: rgba(255, 255, 255, 0.6); border: 1px solid rgba(212, 175, 55, 0.3);">
-        <div class="w-20 h-28 rounded-lg flex-shrink-0" style="background: linear-gradient(135deg, #8B4513 0%, #D4AF37 100%);"></div>
-        <div class="flex-1">
-         <h3 class="reader-font font-semibold text-xl mb-2" style="color: #2C1810;">The Art of Reading</h3>
-         <p class="ui-font text-sm mb-4" style="color: #8B4513; opacity: 0.8;">by Virginia Wolfe</p>
-         <div class="mb-2">
-          <div class="w-full h-2 rounded-full overflow-hidden" style="background: rgba(139, 69, 19, 0.2);">
-           <div class="h-full rounded-full" style="background: linear-gradient(90deg, #D4AF37 0%, #FFD700 100%); width: 7%;"></div>
-          </div>
-         </div>
-         <p class="ui-font text-xs" style="color: #8B4513; opacity: 0.7;">25 of 347 pages · 7% complete</p>
-        </div><button class="control-btn px-6 py-3 rounded-full ui-font font-medium whitespace-nowrap" onclick="switchPage('reader')" style="background: linear-gradient(135deg, #D4AF37 0%, #FFD700 100%); color: #2C1810;"> Continue Reading </button>
-       </div>
-      </div><!-- Reading Stats -->
-      <div class="mb-12">
-       <h2 class="ui-font font-semibold text-xl mb-6" style="color: #2C1810;">Your Reading Stats</h2>
-       <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div class="stat-card p-6 rounded-2xl text-center">
-         <div class="reader-font text-4xl font-bold mb-2" style="color: #2C1810;">
-          12
-         </div>
-         <div class="ui-font text-sm" style="color: #8B4513; opacity: 0.8;">
-          Books Read
-         </div>
-        </div>
-        <div class="stat-card p-6 rounded-2xl text-center">
-         <div class="reader-font text-4xl font-bold mb-2" style="color: #2C1810;">
-          4,521
-         </div>
-         <div class="ui-font text-sm" style="color: #8B4513; opacity: 0.8;">
-          Pages Read
-         </div>
-        </div>
-        <div class="stat-card p-6 rounded-2xl text-center">
-         <div class="reader-font text-4xl font-bold mb-2" style="color: #2C1810;">
-          87h
-         </div>
-         <div class="ui-font text-sm" style="color: #8B4513; opacity: 0.8;">
-          Reading Time
-         </div>
-        </div>
-       </div>
-      </div><!-- Quick Access -->
-      <div>
-       <h2 class="ui-font font-semibold text-xl mb-6" style="color: #2C1810;">Quick Access</h2>
-       <div class="grid grid-cols-2 gap-4"><button onclick="switchPage('library')" class="control-btn p-6 rounded-2xl text-left" style="background: rgba(255, 255, 255, 0.6); border: 1px solid rgba(212, 175, 55, 0.3);">
-         <div class="w-10 h-10 rounded-full flex items-center justify-center mb-3" style="background: rgba(212, 175, 55, 0.2);">
-          <svg width="20" height="20" viewbox="0 0 24 24" fill="none" stroke="#8B4513" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path> <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
-          </svg>
-         </div>
-         <div class="ui-font font-medium mb-1" style="color: #2C1810;">
-          Browse Library
-         </div>
-         <div class="ui-font text-xs" style="color: #8B4513; opacity: 0.7;">
-          24 books available
-         </div></button> <button onclick="switchPage('settings')" class="control-btn p-6 rounded-2xl text-left" style="background: rgba(255, 255, 255, 0.6); border: 1px solid rgba(212, 175, 55, 0.3);">
-         <div class="w-10 h-10 rounded-full flex items-center justify-center mb-3" style="background: rgba(212, 175, 55, 0.2);">
-          <svg width="20" height="20" viewbox="0 0 24 24" fill="none" stroke="#8B4513" stroke-width="2"><circle cx="12" cy="12" r="3"></circle> <path d="M12 1v6m0 6v6m9-9h-6m-6 0H3"></path>
-          </svg>
-         </div>
-         <div class="ui-font font-medium mb-1" style="color: #2C1810;">
-          Settings
-         </div>
-         <div class="ui-font text-xs" style="color: #8B4513; opacity: 0.7;">
-          Customize experience
-         </div></button>
-       </div>
+</head>
+
+<body class="h-full ui-font">
+<div id="app-wrapper" class="w-full h-full flex flex-col"
+     style="background:linear-gradient(135deg,#FFF8E7,#F5E6D3)">
+
+<!-- ================= HOME ================= -->
+<div id="home-page" class="page active flex-col flex-1 overflow-hidden">
+  <div class="flex-1 overflow-y-auto px-6 py-8 pb-24 max-w-4xl mx-auto">
+    <h1 class="reader-font text-4xl font-bold mb-6 text-center text-[#2C1810]">
+      Welcome Back
+    </h1>
+
+    <div class="p-6 rounded-2xl flex gap-6 items-center bg-white/60 border border-yellow-300">
+      <div id="book-cover" class="w-20 h-28 rounded-lg bg-gradient-to-br from-amber-700 to-yellow-400"></div>
+      <div class="flex-1">
+        <h3 id="home-book-title" class="reader-font text-xl font-semibold">—</h3>
+        <p id="home-book-author" class="text-sm opacity-70">—</p>
       </div>
-     </div>
+      <button onclick="switchPage('reader')" class="control-btn px-5 py-3 rounded-full bg-yellow-400">
+        Continue
+      </button>
     </div>
-   </div><!-- LIBRARY PAGE -->
-   <div id="library-page" class="page flex-col flex-1 overflow-hidden">
-    <div class="flex-1 overflow-y-auto px-4 sm:px-8 py-8 pb-24">
-     <div class="max-w-6xl mx-auto"><!-- Header -->
-      <div class="mb-8">
-       <h1 class="reader-font font-bold text-3xl sm:text-4xl mb-2" style="color: #2C1810;">Your Library</h1>
-       <p class="ui-font" style="color: #8B4513; opacity: 0.8;">24 books in your collection</p>
-      </div><!-- Filter Tabs -->
-      <div class="flex gap-3 mb-8 overflow-x-auto pb-2"><button class="control-btn px-5 py-2 rounded-full ui-font text-sm font-medium whitespace-nowrap" style="background: linear-gradient(135deg, #D4AF37 0%, #FFD700 100%); color: #2C1810;"> All Books </button> <button class="control-btn px-5 py-2 rounded-full ui-font text-sm font-medium whitespace-nowrap" style="background: rgba(212, 175, 55, 0.2); color: #8B4513;"> Currently Reading </button> <button class="control-btn px-5 py-2 rounded-full ui-font text-sm font-medium whitespace-nowrap" style="background: rgba(212, 175, 55, 0.2); color: #8B4513;"> Want to Read </button> <button class="control-btn px-5 py-2 rounded-full ui-font text-sm font-medium whitespace-nowrap" style="background: rgba(212, 175, 55, 0.2); color: #8B4513;"> Finished </button>
-      </div><!-- Book Grid -->
-      <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-6"><!-- Book 1 -->
-       <div class="book-card" onclick="switchPage('reader')">
-        <div class="w-full aspect-[2/3] rounded-xl mb-3 overflow-hidden" style="background: linear-gradient(135deg, #8B4513 0%, #D4AF37 100%); box-shadow: 0 8px 20px rgba(44, 24, 16, 0.15);">
-         <div class="w-full h-full flex items-center justify-center">
-          <div class="reader-font text-white text-center p-4">
-           <div class="text-lg font-bold mb-2">
-            The Art of
-           </div>
-           <div class="text-2xl font-bold">
-            Reading
-           </div>
-          </div>
-         </div>
-        </div>
-        <h3 class="reader-font font-semibold text-base mb-1" style="color: #2C1810;">The Art of Reading</h3>
-        <p class="ui-font text-sm mb-2" style="color: #8B4513; opacity: 0.8;">Virginia Wolfe</p>
-        <div class="w-full h-1 rounded-full overflow-hidden" style="background: rgba(139, 69, 19, 0.2);">
-         <div class="h-full" style="background: #D4AF37; width: 7%;"></div>
-        </div>
-       </div><!-- Book 2 -->
-       <div class="book-card" onclick="switchPage('reader')">
-        <div class="w-full aspect-[2/3] rounded-xl mb-3" style="background: linear-gradient(135deg, #2C5F2D 0%, #97BC62 100%); box-shadow: 0 8px 20px rgba(44, 24, 16, 0.15);"></div>
-        <h3 class="reader-font font-semibold text-base mb-1" style="color: #2C1810;">Nature's Wisdom</h3>
-        <p class="ui-font text-sm" style="color: #8B4513; opacity: 0.8;">Henry Thoreau</p>
-       </div><!-- Book 3 -->
-       <div class="book-card" onclick="switchPage('reader')">
-        <div class="w-full aspect-[2/3] rounded-xl mb-3" style="background: linear-gradient(135deg, #7C2D12 0%, #EA580C 100%); box-shadow: 0 8px 20px rgba(44, 24, 16, 0.15);"></div>
-        <h3 class="reader-font font-semibold text-base mb-1" style="color: #2C1810;">Fire &amp; Light</h3>
-        <p class="ui-font text-sm" style="color: #8B4513; opacity: 0.8;">Maya Angelou</p>
-       </div><!-- Book 4 -->
-       <div class="book-card" onclick="switchPage('reader')">
-        <div class="w-full aspect-[2/3] rounded-xl mb-3" style="background: linear-gradient(135deg, #1E3A5F 0%, #60A5FA 100%); box-shadow: 0 8px 20px rgba(44, 24, 16, 0.15);"></div>
-        <h3 class="reader-font font-semibold text-base mb-1" style="color: #2C1810;">Ocean Tales</h3>
-        <p class="ui-font text-sm" style="color: #8B4513; opacity: 0.8;">Herman Melville</p>
-       </div><!-- Book 5 -->
-       <div class="book-card" onclick="switchPage('reader')">
-        <div class="w-full aspect-[2/3] rounded-xl mb-3" style="background: linear-gradient(135deg, #5B21B6 0%, #A78BFA 100%); box-shadow: 0 8px 20px rgba(44, 24, 16, 0.15);"></div>
-        <h3 class="reader-font font-semibold text-base mb-1" style="color: #2C1810;">Midnight Dreams</h3>
-        <p class="ui-font text-sm" style="color: #8B4513; opacity: 0.8;">Emily Brontë</p>
-       </div><!-- Book 6 -->
-       <div class="book-card" onclick="switchPage('reader')">
-        <div class="w-full aspect-[2/3] rounded-xl mb-3" style="background: linear-gradient(135deg, #831843 0%, #F472B6 100%); box-shadow: 0 8px 20px rgba(44, 24, 16, 0.15);"></div>
-        <h3 class="reader-font font-semibold text-base mb-1" style="color: #2C1810;">Rose Gardens</h3>
-        <p class="ui-font text-sm" style="color: #8B4513; opacity: 0.8;">Jane Austen</p>
-       </div><!-- Book 7 -->
-       <div class="book-card" onclick="switchPage('reader')">
-        <div class="w-full aspect-[2/3] rounded-xl mb-3" style="background: linear-gradient(135deg, #78350F 0%, #FBBF24 100%); box-shadow: 0 8px 20px rgba(44, 24, 16, 0.15);"></div>
-        <h3 class="reader-font font-semibold text-base mb-1" style="color: #2C1810;">Golden Hour</h3>
-        <p class="ui-font text-sm" style="color: #8B4513; opacity: 0.8;">F. Scott Fitzgerald</p>
-       </div><!-- Book 8 -->
-       <div class="book-card" onclick="switchPage('reader')">
-        <div class="w-full aspect-[2/3] rounded-xl mb-3" style="background: linear-gradient(135deg, #374151 0%, #9CA3AF 100%); box-shadow: 0 8px 20px rgba(44, 24, 16, 0.15);"></div>
-        <h3 class="reader-font font-semibold text-base mb-1" style="color: #2C1810;">Silver Lining</h3>
-        <p class="ui-font text-sm" style="color: #8B4513; opacity: 0.8;">Oscar Wilde</p>
-       </div>
-      </div>
-     </div>
-    </div>
-   </div><!-- READER PAGE -->
-   <div id="reader-page" class="page flex-col flex-1 overflow-hidden"><!-- Progress Bar -->
-    <div class="w-full h-1" style="background: linear-gradient(90deg, #2C1810 0%, #8B4513 100%);">
-     <div class="h-full transition-all duration-300" id="progress-bar" style="background: linear-gradient(90deg, #D4AF37 0%, #FFD700 100%); width: 7%;"></div>
-    </div><!-- Header -->
-    <div class="px-4 sm:px-8 pt-6 pb-4 flex items-center justify-between" style="border-bottom: 1px solid rgba(139, 69, 19, 0.1);"><button onclick="switchPage('library')" class="control-btn p-2 rounded-full" style="background: rgba(212, 175, 55, 0.2); color: #8B4513;" aria-label="Back to library">
-      <svg width="20" height="20" viewbox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"></path>
-      </svg></button>
-     <div class="flex-1 mx-4 text-center">
-      <h1 class="reader-font font-bold text-lg sm:text-xl" id="book-title" style="color: #2C1810;">The Art of Reading</h1>
-      <p class="ui-font text-xs sm:text-sm" id="author-name" style="color: #8B4513; opacity: 0.8;">by Virginia Wolfe</p>
-     </div><button class="control-btn p-2 rounded-full" style="background: rgba(212, 175, 55, 0.2); color: #8B4513;" aria-label="Bookmark">
-      <svg width="20" height="20" viewbox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
-      </svg></button>
-    </div><!-- Reading Content -->
-    <div class="flex-1 overflow-y-auto px-4 sm:px-8 py-8 pb-24">
-     <div class="max-w-3xl mx-auto">
-      <h2 class="reader-font font-semibold text-2xl sm:text-3xl mb-8" id="chapter-title" style="color: #2C1810;">Chapter One: The Beginning</h2>
-      <div class="reader-font reading-text space-y-6" id="content" style="color: #3C2415; font-size: 18px;">
-       <p>The evening light streamed through the tall windows, casting long shadows across the worn floorboards. She sat in her favorite chair, a leather-bound volume resting gently in her hands, its pages yellowed with age and filled with the wisdom of countless generations.</p>
-       <p>Reading had always been her sanctuary, a place where time moved differently, where the boundaries between reality and imagination blurred into something beautiful and transcendent. Each book was a portal, each page an invitation to somewhere new.</p>
-       <p>Outside, the city hummed with its usual energy, but here in this quiet corner, surrounded by shelves that reached toward the ceiling, she found a peace that the world could rarely offer. The weight of the book in her hands was comforting, familiar—a friend who never judged, never rushed, always waited patiently to continue their conversation.</p>
-       <p>She turned the page with practiced care, the soft whisper of paper the only sound in the room. The author's words flowed like a gentle stream, carrying her forward through landscapes of thought and emotion. Time seemed to pause, holding its breath as she lost herself in the narrative.</p>
-       <p>There was magic in this moment, in the quiet communion between reader and writer across the gulf of years. Through these pages, voices from the past spoke directly to her heart, sharing truths that remained constant despite the changing world outside.</p>
-      </div>
-     </div>
-    </div><!-- Footer Controls -->
-    <div class="px-4 sm:px-8 py-4 flex items-center justify-between" style="border-top: 1px solid rgba(139, 69, 19, 0.1);"><button id="prev-btn" class="control-btn px-4 sm:px-6 py-3 rounded-full flex items-center gap-2 ui-font font-medium" style="background: rgba(212, 175, 55, 0.2); color: #8B4513;">
-      <svg width="16" height="16" viewbox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"></path>
-      </svg><span class="hidden sm:inline">Previous</span> </button>
-     <div class="ui-font text-sm" style="color: #8B4513; opacity: 0.8;"><span id="current-page">25</span> / <span id="total-pages">347</span>
-     </div><button id="next-btn" class="control-btn px-4 sm:px-6 py-3 rounded-full flex items-center gap-2 ui-font font-medium" style="background: linear-gradient(135deg, #D4AF37 0%, #FFD700 100%); color: #2C1810;"> <span class="hidden sm:inline">Next</span>
-      <svg width="16" height="16" viewbox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"></path>
-      </svg></button>
-    </div>
-   </div><!-- SETTINGS PAGE -->
-   <div id="settings-page" class="page flex-col flex-1 overflow-hidden">
-    <div class="flex-1 overflow-y-auto px-4 sm:px-8 py-8 pb-24">
-     <div class="max-w-2xl mx-auto"><!-- Header -->
-      <div class="mb-8">
-       <h1 class="reader-font font-bold text-3xl sm:text-4xl mb-2" style="color: #2C1810;">Settings</h1>
-       <p class="ui-font" style="color: #8B4513; opacity: 0.8;">Customize your reading experience</p>
-      </div><!-- Reading Preferences -->
-      <div class="mb-8">
-       <h2 class="ui-font font-semibold text-lg mb-4" style="color: #2C1810;">Reading Preferences</h2><!-- Font Size Control -->
-       <div class="p-6 rounded-2xl mb-4" style="background: rgba(255, 255, 255, 0.6); border: 1px solid rgba(212, 175, 55, 0.3);"><label class="ui-font text-sm font-medium mb-4 block" style="color: #8B4513;">Text Size</label>
-        <div class="flex items-center gap-4"><button id="decrease-font" class="control-btn w-12 h-12 rounded-full flex items-center justify-center" style="background: rgba(212, 175, 55, 0.2); color: #8B4513;" aria-label="Decrease font size">
-          <svg width="20" height="20" viewbox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"></path>
-          </svg></button>
-         <div class="flex-1 text-center ui-font font-medium text-lg" style="color: #2C1810;"><span id="font-size-display">18px</span>
-         </div><button id="increase-font" class="control-btn w-12 h-12 rounded-full flex items-center justify-center" style="background: rgba(212, 175, 55, 0.2); color: #8B4513;" aria-label="Increase font size">
-          <svg width="20" height="20" viewbox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14m-7-7h14"></path>
-          </svg></button>
-        </div>
-       </div><!-- Theme Selection -->
-       <div class="p-6 rounded-2xl" style="background: rgba(255, 255, 255, 0.6); border: 1px solid rgba(212, 175, 55, 0.3);"><label class="ui-font text-sm font-medium mb-4 block" style="color: #8B4513;">Reading Theme</label>
-        <div class="grid grid-cols-3 gap-3"><button class="theme-btn h-20 rounded-xl border-2 transition-all flex flex-col items-center justify-center gap-2" data-theme="sepia" style="background: linear-gradient(135deg, #FFF8E7 0%, #F5E6D3 100%); border-color: #D4AF37;">
-          <div class="w-8 h-8 rounded-full" style="background: #F5E6D3;"></div>
-          <div class="text-xs ui-font font-medium" style="color: #2C1810;">
-           Sepia
-          </div></button> <button class="theme-btn h-20 rounded-xl border-2 transition-all flex flex-col items-center justify-center gap-2" data-theme="light" style="background: linear-gradient(135deg, #FFFFFF 0%, #F8F9FA 100%); border-color: rgba(139, 69, 19, 0.2);">
-          <div class="w-8 h-8 rounded-full" style="background: #F8F9FA;"></div>
-          <div class="text-xs ui-font font-medium" style="color: #2C1810;">
-           Light
-          </div></button> <button class="theme-btn h-20 rounded-xl border-2 transition-all flex flex-col items-center justify-center gap-2" data-theme="dark" style="background: linear-gradient(135deg, #1A1A1A 0%, #2D2D2D 100%); border-color: rgba(139, 69, 19, 0.2);">
-          <div class="w-8 h-8 rounded-full" style="background: #2D2D2D;"></div>
-          <div class="text-xs ui-font font-medium" style="color: #E0E0E0;">
-           Dark
-          </div></button>
-        </div>
-       </div>
-      </div><!-- Account Settings -->
-      <div class="mb-8">
-       <h2 class="ui-font font-semibold text-lg mb-4" style="color: #2C1810;">Account</h2>
-       <div class="space-y-3"><button class="w-full p-4 rounded-xl text-left flex items-center justify-between control-btn" style="background: rgba(255, 255, 255, 0.6); border: 1px solid rgba(212, 175, 55, 0.3);"> <span class="ui-font font-medium" style="color: #2C1810;">Profile Settings</span>
-         <svg width="20" height="20" viewbox="0 0 24 24" fill="none" stroke="#8B4513" stroke-width="2"><path d="M9 18l6-6-6-6"></path>
-         </svg></button> <button class="w-full p-4 rounded-xl text-left flex items-center justify-between control-btn" style="background: rgba(255, 255, 255, 0.6); border: 1px solid rgba(212, 175, 55, 0.3);"> <span class="ui-font font-medium" style="color: #2C1810;">Notification Preferences</span>
-         <svg width="20" height="20" viewbox="0 0 24 24" fill="none" stroke="#8B4513" stroke-width="2"><path d="M9 18l6-6-6-6"></path>
-         </svg></button> <button class="w-full p-4 rounded-xl text-left flex items-center justify-between control-btn" style="background: rgba(255, 255, 255, 0.6); border: 1px solid rgba(212, 175, 55, 0.3);"> <span class="ui-font font-medium" style="color: #2C1810;">Privacy &amp; Data</span>
-         <svg width="20" height="20" viewbox="0 0 24 24" fill="none" stroke="#8B4513" stroke-width="2"><path d="M9 18l6-6-6-6"></path>
-         </svg></button>
-       </div>
-      </div><!-- App Info -->
-      <div class="p-6 rounded-2xl text-center" style="background: rgba(212, 175, 55, 0.1); border: 1px solid rgba(212, 175, 55, 0.2);">
-       <p class="ui-font text-sm mb-2" style="color: #8B4513; opacity: 0.8;">Digital Reader</p>
-       <p class="ui-font text-xs" style="color: #8B4513; opacity: 0.6;">Version 2.1.0</p>
-      </div>
-     </div>
-    </div>
-   </div><!-- Bottom Navigation -->
-   <nav class="fixed bottom-0 left-0 right-0 px-4 py-3" style="background: rgba(255, 248, 231, 0.95); backdrop-filter: blur(10px); border-top: 1px solid rgba(212, 175, 55, 0.3); z-index: 100;">
-    <div class="max-w-md mx-auto flex items-center justify-around"><button onclick="switchPage('home')" class="nav-item flex flex-col items-center gap-1 px-4 py-2 active" data-page="home">
-      <svg width="24" height="24" viewbox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
-      </svg><span class="ui-font text-xs font-medium">Home</span> </button> <button onclick="switchPage('library')" class="nav-item flex flex-col items-center gap-1 px-4 py-2" data-page="library">
-      <svg width="24" height="24" viewbox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path> <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
-      </svg><span class="ui-font text-xs font-medium">Library</span> </button> <button onclick="switchPage('reader')" class="nav-item flex flex-col items-center gap-1 px-4 py-2" data-page="reader">
-      <svg width="24" height="24" viewbox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path> <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
-      </svg><span class="ui-font text-xs font-medium">Read</span> </button> <button onclick="switchPage('settings')" class="nav-item flex flex-col items-center gap-1 px-4 py-2" data-page="settings">
-      <svg width="24" height="24" viewbox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle> <path d="M12 1v6m0 6v6m9-9h-6m-6 0H3"></path>
-      </svg><span class="ui-font text-xs font-medium">Settings</span> </button>
-    </div>
-   </nav>
   </div>
-  <script>
-    const defaultConfig = {
-      book_title: "The Art of Reading",
-      author_name: "by Virginia Wolfe",
-      chapter_title: "Chapter One: The Beginning",
-      background_color: "#FFF8E7",
-      surface_color: "#F5E6D3",
-      text_color: "#2C1810",
-      primary_action_color: "#D4AF37",
-      secondary_action_color: "#8B4513",
-      font_family: "Crimson Pro",
-      font_size: 18
-    };
+</div>
 
-    let currentFontSize = defaultConfig.font_size;
-    let currentTheme = 'sepia';
-    let currentPage = 25;
-    const totalPages = 347;
+<!-- ================= LIBRARY ================= -->
+<div id="library-page" class="page flex-col flex-1 overflow-hidden">
+  <div class="flex-1 overflow-y-auto px-6 py-8 pb-24 max-w-6xl mx-auto">
+    <h1 class="reader-font text-3xl font-bold mb-6">Library</h1>
+    <div id="library-grid" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-6"></div>
+  </div>
+</div>
 
-    async function onConfigChange(config) {
-      const bookTitle = config.book_title || defaultConfig.book_title;
-      const authorName = config.author_name || defaultConfig.author_name;
-      const chapterTitle = config.chapter_title || defaultConfig.chapter_title;
-      const backgroundColor = config.background_color || defaultConfig.background_color;
-      const surfaceColor = config.surface_color || defaultConfig.surface_color;
-      const textColor = config.text_color || defaultConfig.text_color;
-      const primaryActionColor = config.primary_action_color || defaultConfig.primary_action_color;
-      const secondaryActionColor = config.secondary_action_color || defaultConfig.secondary_action_color;
-      const customFont = config.font_family || defaultConfig.font_family;
-      const baseFontSize = config.font_size || defaultConfig.font_size;
+<!-- ================= READER ================= -->
+<div id="reader-page" class="page flex-col flex-1 overflow-hidden">
+  <div class="w-full h-1 bg-amber-900">
+    <div id="progress-bar" class="h-full bg-yellow-400" style="width:0%"></div>
+  </div>
 
-      currentFontSize = baseFontSize;
+  <div class="flex items-center justify-between px-6 py-4 border-b">
+    <button onclick="switchPage('library')">←</button>
+    <div class="text-center">
+      <h1 id="book-title" class="reader-font font-bold"></h1>
+      <p id="author-name" class="text-sm opacity-70"></p>
+    </div>
+    <div></div>
+  </div>
 
-      document.getElementById('book-title').textContent = bookTitle;
-      document.getElementById('author-name').textContent = authorName;
-      document.getElementById('chapter-title').textContent = chapterTitle;
+  <div class="flex-1 overflow-y-auto px-6 py-8 pb-24 max-w-3xl mx-auto">
+    <h2 id="chapter-title" class="reader-font text-2xl font-semibold mb-6"></h2>
+    <div id="content" class="reader-font reading-text space-y-6 text-lg"></div>
+  </div>
 
-      const appWrapper = document.getElementById('app-wrapper');
-      appWrapper.style.background = `linear-gradient(135deg, ${backgroundColor} 0%, ${surfaceColor} 100%)`;
+  <div class="flex justify-between px-6 py-4 border-t">
+    <button id="prev-btn">← Prev</button>
+    <div><span id="current-page">1</span> / <span id="total-pages">1</span></div>
+    <button id="next-btn">Next →</button>
+  </div>
+</div>
 
-      const navBar = document.querySelector('nav');
-      navBar.style.background = `rgba(255, 248, 231, 0.95)`;
-      navBar.style.borderTopColor = `rgba(212, 175, 55, 0.3)`;
+<!-- ================= SETTINGS ================= -->
+<div id="settings-page" class="page flex-col flex-1 overflow-hidden">
+  <div class="flex-1 overflow-y-auto px-6 py-8 pb-24 max-w-2xl mx-auto">
 
-      document.getElementById('book-title').style.color = textColor;
-      document.getElementById('author-name').style.color = secondaryActionColor;
-      document.getElementById('chapter-title').style.color = textColor;
-      document.getElementById('content').style.color = textColor;
+    <h1 class="reader-font text-3xl font-bold mb-6">Settings</h1>
 
-      const progressBar = document.getElementById('progress-bar');
-      progressBar.style.background = `linear-gradient(90deg, ${primaryActionColor} 0%, ${primaryActionColor} 100%)`;
+    <!-- IMPORT -->
+    <div class="mb-8">
+      <h2 class="font-semibold mb-3">Import & Translation</h2>
 
-      const navItems = document.querySelectorAll('.nav-item');
-      navItems.forEach(item => {
-        item.style.color = secondaryActionColor;
-        if (item.classList.contains('active')) {
-          item.style.color = primaryActionColor;
-        }
-      });
+      <div class="p-5 rounded-xl bg-white/60 border border-yellow-300 space-y-3">
+        <input name="import-url" class="w-full p-3 rounded-lg" placeholder="First chapter URL">
 
-      const readerFont = `${customFont}, Georgia, serif`;
-      document.querySelectorAll('.reader-font').forEach(el => {
-        el.style.fontFamily = readerFont;
-      });
+        <div class="text-sm">
+          <span id="import-status">Idle</span>
+          <span id="import-chapter" class="ml-2"></span>
+        </div>
 
-      document.getElementById('content').style.fontSize = `${baseFontSize}px`;
-      document.getElementById('font-size-display').textContent = `${baseFontSize}px`;
-    }
+        <div class="flex gap-3">
+          <button onclick="startImport()">▶ Start</button>
+          <button onclick="stopImport()">⏸ Pause</button>
+          <button onclick="resetImport()">🗑 Reset</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 
-    function mapToCapabilities(config) {
-      return {
-        recolorables: [
-          {
-            get: () => config.background_color || defaultConfig.background_color,
-            set: (value) => {
-              config.background_color = value;
-              window.elementSdk.setConfig({ background_color: value });
-            }
-          },
-          {
-            get: () => config.surface_color || defaultConfig.surface_color,
-            set: (value) => {
-              config.surface_color = value;
-              window.elementSdk.setConfig({ surface_color: value });
-            }
-          },
-          {
-            get: () => config.text_color || defaultConfig.text_color,
-            set: (value) => {
-              config.text_color = value;
-              window.elementSdk.setConfig({ text_color: value });
-            }
-          },
-          {
-            get: () => config.primary_action_color || defaultConfig.primary_action_color,
-            set: (value) => {
-              config.primary_action_color = value;
-              window.elementSdk.setConfig({ primary_action_color: value });
-            }
-          },
-          {
-            get: () => config.secondary_action_color || defaultConfig.secondary_action_color,
-            set: (value) => {
-              config.secondary_action_color = value;
-              window.elementSdk.setConfig({ secondary_action_color: value });
-            }
-          }
-        ],
-        borderables: [],
-        fontEditable: {
-          get: () => config.font_family || defaultConfig.font_family,
-          set: (value) => {
-            config.font_family = value;
-            window.elementSdk.setConfig({ font_family: value });
-          }
-        },
-        fontSizeable: {
-          get: () => config.font_size || defaultConfig.font_size,
-          set: (value) => {
-            config.font_size = value;
-            window.elementSdk.setConfig({ font_size: value });
-          }
-        }
-      };
-    }
+<!-- ================= NAV ================= -->
+<nav class="fixed bottom-0 left-0 right-0 bg-white/90 border-t flex justify-around py-3">
+  <button onclick="switchPage('home')" data-page="home" class="nav-item active">Home</button>
+  <button onclick="switchPage('library')" data-page="library" class="nav-item">Library</button>
+  <button onclick="switchPage('reader')" data-page="reader" class="nav-item">Read</button>
+  <button onclick="switchPage('settings')" data-page="settings" class="nav-item">Settings</button>
+</nav>
 
-    function mapToEditPanelValues(config) {
-      return new Map([
-        ["book_title", config.book_title || defaultConfig.book_title],
-        ["author_name", config.author_name || defaultConfig.author_name],
-        ["chapter_title", config.chapter_title || defaultConfig.chapter_title]
-      ]);
-    }
+<!-- ================= UI HOOKS ================= -->
+<script>
+let chapters = [];
+let currentChapter = 1;
 
-    if (window.elementSdk) {
-      window.elementSdk.init({
-        defaultConfig,
-        onConfigChange,
-        mapToCapabilities,
-        mapToEditPanelValues
-      });
-    }
+function switchPage(p){
+  document.querySelectorAll('.page').forEach(e=>e.classList.remove('active'));
+  document.getElementById(p+'-page').classList.add('active');
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+  document.querySelector(`[data-page="${p}"]`)?.classList.add('active');
+}
 
-    // Page Navigation
-    function switchPage(pageName) {
-      const pages = document.querySelectorAll('.page');
-      pages.forEach(page => page.classList.remove('active'));
-      
-      const targetPage = document.getElementById(`${pageName}-page`);
-      if (targetPage) {
-        targetPage.classList.add('active');
-      }
-      
-      const navItems = document.querySelectorAll('.nav-item');
-      navItems.forEach(item => {
-        item.classList.remove('active');
-        item.style.color = '#8B4513';
-      });
-      
-      const activeNavItem = document.querySelector(`[data-page="${pageName}"]`);
-      if (activeNavItem) {
-        activeNavItem.classList.add('active');
-        activeNavItem.style.color = '#D4AF37';
-      }
-    }
+/* BOOK */
+async function loadBook(){
+  const b = await fetch('/api/book').then(r=>r.json());
+  document.getElementById('book-title').textContent = b.title;
+  document.getElementById('home-book-title').textContent = b.title;
+  document.getElementById('author-name').textContent = '';
+}
 
-    // Font Size Controls
-    const decreaseFont = document.getElementById('decrease-font');
-    const increaseFont = document.getElementById('increase-font');
+/* COVER */
+fetch('/api/book/cover').then(r=>r.json()).then(d=>{
+  const c=document.getElementById('book-cover');
+  if(d.url){ c.style.backgroundImage=`url(${d.url})`; c.style.backgroundSize='cover'; }
+});
 
-    decreaseFont.addEventListener('click', () => {
-      if (currentFontSize > 12) {
-        currentFontSize -= 2;
-        if (window.elementSdk) {
-          window.elementSdk.setConfig({ font_size: currentFontSize });
-        }
-      }
-    });
+/* LIBRARY */
+async function loadChapters(){
+  chapters = await fetch('/api/chapters').then(r=>r.json());
+  document.getElementById('total-pages').textContent = chapters.length;
 
-    increaseFont.addEventListener('click', () => {
-      if (currentFontSize < 28) {
-        currentFontSize += 2;
-        if (window.elementSdk) {
-          window.elementSdk.setConfig({ font_size: currentFontSize });
-        }
-      }
-    });
+  const grid = document.getElementById('library-grid');
+  grid.innerHTML='';
+  chapters.forEach(ch=>{
+    const d=document.createElement('div');
+    d.className='book-card';
+    d.onclick=()=>openChapter(ch.num);
+    d.innerHTML=`<div class="aspect-[2/3] rounded-xl bg-gradient-to-br from-amber-700 to-yellow-400 mb-2"></div>
+                 <div class="text-sm">Chapter ${ch.num}</div>
+                 <div class="text-xs opacity-70">${ch.title}</div>`;
+    grid.appendChild(d);
+  });
+}
 
-    // Theme Selection
-    const themeButtons = document.querySelectorAll('.theme-btn');
-    themeButtons.forEach(btn => {
-      btn.addEventListener('click', () => {
-        const theme = btn.dataset.theme;
-        currentTheme = theme;
-        
-        themeButtons.forEach(b => {
-          b.style.borderColor = 'rgba(139, 69, 19, 0.2)';
-        });
-        btn.style.borderColor = '#D4AF37';
-        
-        let bgColor, surfaceColor, textColor;
-        
-        if (theme === 'sepia') {
-          bgColor = '#FFF8E7';
-          surfaceColor = '#F5E6D3';
-          textColor = '#2C1810';
-        } else if (theme === 'light') {
-          bgColor = '#FFFFFF';
-          surfaceColor = '#F8F9FA';
-          textColor = '#2C1810';
-        } else if (theme === 'dark') {
-          bgColor = '#1A1A1A';
-          surfaceColor = '#2D2D2D';
-          textColor = '#E0E0E0';
-        }
-        
-        if (window.elementSdk) {
-          window.elementSdk.setConfig({
-            background_color: bgColor,
-            surface_color: surfaceColor,
-            text_color: textColor
-          });
-        }
-      });
-    });
+/* READER */
+async function openChapter(n){
+  const c = await fetch('/api/chapter/'+n).then(r=>r.json());
+  currentChapter=n;
+  document.getElementById('chapter-title').textContent=`Chapter ${n}: ${c.title}`;
+  document.getElementById('content').innerHTML=c.html;
+  document.getElementById('current-page').textContent=n;
+  document.getElementById('progress-bar').style.width =
+    Math.round((n/chapters.length)*100)+'%';
+  switchPage('reader');
+}
 
-    // Reader Page Navigation
-    const prevBtn = document.getElementById('prev-btn');
-    const nextBtn = document.getElementById('next-btn');
+document.getElementById('prev-btn').onclick=()=>currentChapter>1&&openChapter(currentChapter-1);
+document.getElementById('next-btn').onclick=()=>currentChapter<chapters.length&&openChapter(currentChapter+1);
 
-    if (prevBtn) {
-      prevBtn.addEventListener('click', () => {
-        if (currentPage > 1) {
-          currentPage--;
-          document.getElementById('current-page').textContent = currentPage;
-          const progress = (currentPage / totalPages) * 100;
-          document.getElementById('progress-bar').style.width = `${progress}%`;
-        }
-      });
-    }
+/* IMPORT */
+function startImport(){
+  const url=document.querySelector('input[name="import-url"]').value;
+  fetch('/api/import/start',{method:'POST',body:new URLSearchParams({url})});
+}
+function stopImport(){ fetch('/api/import/stop',{method:'POST'}) }
+function resetImport(){ if(confirm('Reset?')) fetch('/api/import/reset',{method:'POST'}).then(loadChapters) }
 
-    if (nextBtn) {
-      nextBtn.addEventListener('click', () => {
-        if (currentPage < totalPages) {
-          currentPage++;
-          document.getElementById('current-page').textContent = currentPage;
-          const progress = (currentPage / totalPages) * 100;
-          document.getElementById('progress-bar').style.width = `${progress}%`;
-        }
-      });
-    }
-  </script>
- <script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'9ba9e1ef51031717',t:'MTc2Nzg1NjMwNC4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+/* SSE */
+const es=new EventSource('/api/status/stream');
+es.onmessage=e=>{
+  const s=JSON.parse(e.data);
+  document.getElementById('import-status').textContent=s.running?s.action:'Idle';
+  document.getElementById('import-chapter').textContent=s.chapter?`Chapter ${s.chapter}`:'';
+  if(s.chapter>chapters.length) loadChapters();
+};
+
+document.addEventListener('DOMContentLoaded',()=>{
+  loadBook();
+  loadChapters();
+});
+</script>
+
+</div>
+</body>
 </html>
